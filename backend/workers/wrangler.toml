@@ -1,15 +1,18 @@
 name = "track-apping"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
+account_id = "9804521f1a3991db4ee309eaddfe6dbe"
+
+workers_dev = true
 
 # Cron triggers for periodic work (Phase 4)
 [triggers]
-crons = []  # e.g. ["*/2 * * * *"] for reply poll
+crons = []
 
 [vars]
-TRACKING_BASE_URL = "https://track-apping.<your-subdomain>.workers.dev"
+TRACKING_BASE_URL = "https://track-apping.abhinavkrrr.workers.dev"
 
-# Secrets (set via: wrangler secret put SUPABASE_URL, etc.)
+# Secrets (set via wrangler secret put):
 # - SUPABASE_URL
 # - SUPABASE_SERVICE_ROLE_KEY
 
