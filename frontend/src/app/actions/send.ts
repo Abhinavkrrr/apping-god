@@ -66,6 +66,68 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 }
 
 // ============================================================
+// GENERATE drafts for a SPECIFIC set of contact IDs (post-import flow)
+// ============================================================
+export async function generateDraftsForContacts(contactIds: string[]) {
+  const sb = createAdminClient();
+  if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
+
+  const { data: campaign } = await sb.from("campaigns").select("*")
+    .eq("name", MASTER_CAMPAIGN_NAME).single();
+  if (!campaign) return { ok: false, error: `Master campaign "${MASTER_CAMPAIGN_NAME}" not found.` };
+
+  const { data: seq } = await sb.from("sequences").select("*, templates(*)")
+    .eq("campaign_id", campaign.id).eq("step_number", 0).single();
+  if (!seq?.templates) return { ok: false, error: "Master template not found." };
+  const template = (seq as any).templates;
+
+  // Dedupe against existing drafts/sends
+  const { data: existing } = await sb.from("sends").select("contact_id")
+    .eq("campaign_id", campaign.id)
+    .in("status", ["pending_approval", "approved", "sending", "sent"])
+    .in("contact_id", contactIds);
+  const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
+
+  const eligibleIds = contactIds.filter(id => !touched.has(id));
+  if (eligibleIds.length === 0) return { ok: true, created: 0, skipped: contactIds.length };
+
+  const { data: contacts } = await sb.from("contacts")
+    .select("*, companies(*)").in("id", eligibleIds)
+    .is("unsubscribed_at", null).is("skip_reason", null);
+
+  let created = 0;
+  for (const contact of contacts ?? []) {
+    const company = (contact as any).companies as CompanyRow | null;
+    const opener = company?.brief_one_line ?? "";
+
+    const sendId = randomUUID();
+    const ctx = buildContext(contact as any, company, { company_brief_one_line: opener });
+    const subject = render(template.subject_tmpl, ctx);
+    const text = render(template.body_tmpl, ctx);
+    const html = plainToTrackedHtml(text, sendId);
+
+    const { error } = await sb.from("sends").insert({
+      id: sendId,
+      contact_id: (contact as any).id,
+      campaign_id: campaign.id,
+      sequence_step: 0,
+      template_id: template.id,
+      resume_id: campaign.resume_id,
+      rendered_subject: subject,
+      rendered_body: html,
+      status: "pending_approval",
+    });
+    if (error) continue;
+    await sb.from("approvals").insert({ send_id: sendId, status: "pending" });
+    created++;
+  }
+
+  revalidatePath("/approve");
+  revalidatePath("/");
+  return { ok: true, created, skipped: contactIds.length - created };
+}
+
+// ============================================================
 // GENERATE drafts — uses master template for ALL eligible contacts
 // (campaign status is IGNORED — every contact is processed)
 // ============================================================

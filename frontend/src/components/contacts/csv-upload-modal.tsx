@@ -13,6 +13,7 @@ import { Upload, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import Papa from "papaparse";
 import { bulkImportContacts } from "@/app/actions/contacts";
+import { generateDraftsForContacts } from "@/app/actions/send";
 
 interface ParsedRow {
   first_name: string;
@@ -57,6 +58,7 @@ export function CsvUploadModal() {
   const [detected, setDetected] = useState<Record<string, string | null> | null>(null);
   const [skipped, setSkipped] = useState<{ reason: string; sample: string }[]>([]);
   const [batchLabel, setBatchLabel] = useState("");
+  const [autoGenerate, setAutoGenerate] = useState(true);
   const [isPending, startTransition] = useTransition();
 
   function handleFile(file: File) {
@@ -139,6 +141,18 @@ export function CsvUploadModal() {
             console.error("Import failures:", r.sample_errors);
             toast.warning(`First error: ${r.sample_errors[0]}`);
           }
+
+          // Auto-generate drafts for these contacts so they appear in Approve queue immediately
+          if (autoGenerate && r.contact_ids && r.contact_ids.length > 0) {
+            toast.info(`Generating drafts for ${r.contact_ids.length} contact(s)…`);
+            const g = await generateDraftsForContacts(r.contact_ids);
+            if (g.ok) {
+              toast.success(`✓ ${g.created} new draft(s) in Approve queue${g.skipped ? ` · ${g.skipped} already had drafts` : ""}`);
+            } else {
+              toast.warning(`Drafts skipped: ${g.error}`);
+            }
+          }
+
           setOpen(false); setRows([]); setDetected(null); setSkipped([]); setBatchLabel("");
         } else {
           toast.error("Import failed — check console.");
@@ -187,6 +201,20 @@ export function CsvUploadModal() {
               onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
               className="mt-1" />
           </div>
+
+          <label className="flex items-center gap-2 cursor-pointer text-sm">
+            <input
+              type="checkbox" checked={autoGenerate}
+              onChange={(e) => setAutoGenerate(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            <span>
+              <strong>Generate drafts for these contacts after import</strong>
+              <span className="text-xs text-slate-500 block">
+                Imports go straight to the Approve queue — no need to click Generate Drafts.
+              </span>
+            </span>
+          </label>
 
           {detected && (
             <div className="border border-slate-200 rounded-md p-3 bg-slate-50 space-y-2">

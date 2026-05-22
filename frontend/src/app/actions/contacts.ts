@@ -80,10 +80,13 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
   return { ok: true as const, contact_id: contact.id, was_existing: false };
 }
 
-/** Bulk import contact rows. Same batch_label applied to every row. */
+/** Bulk import contact rows. Same batch_label applied to every row.
+ * Returns the contact_ids of every successfully inserted/updated contact
+ * so the caller can immediately generate drafts for them. */
 export async function bulkImportContacts(rows: AddContactInput[], batch_label?: string) {
   let imported = 0, updated = 0, failed = 0;
   const sampleErrors: string[] = [];
+  const contactIds: string[] = [];
 
   for (const r of rows) {
     if (!r.email || !r.first_name) {
@@ -96,6 +99,7 @@ export async function bulkImportContacts(rows: AddContactInput[], batch_label?: 
       { skipRevalidate: true }
     );
     if (result.ok) {
+      contactIds.push(result.contact_id);
       if (result.was_existing) updated++; else imported++;
     } else {
       failed++;
@@ -103,8 +107,9 @@ export async function bulkImportContacts(rows: AddContactInput[], batch_label?: 
     }
   }
   revalidatePath("/contacts");
+  revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, imported, updated, failed, sample_errors: sampleErrors };
+  return { ok: true, imported, updated, failed, sample_errors: sampleErrors, contact_ids: contactIds };
 }
 
 /** Distinct batch labels for filtering UI. */
