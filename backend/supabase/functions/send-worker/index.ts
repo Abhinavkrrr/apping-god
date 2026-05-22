@@ -20,6 +20,7 @@ const SENDER_PHYSICAL_ADDRESS =
   Deno.env.get("SENDER_PHYSICAL_ADDRESS") ?? "IIT Bombay, Mumbai, India";
 const TRACKING_BASE_URL =
   (Deno.env.get("TRACKING_BASE_URL") ?? "").replace(/\/$/, "");
+const IIT_LOGO_URL = Deno.env.get("IIT_LOGO_URL") ?? "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -68,15 +69,19 @@ function plainToTrackedHtml(plainBody: string, sendId: string): string {
 
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
+  const logoBlock = IIT_LOGO_URL
+    ? `<br><br><img src="${IIT_LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    : "";
+
   const footer = `<br><br>
-<p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px">
+<p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:18px;border-top:1px solid #e5e7eb;padding-top:10px">
 ${SENDER_PHYSICAL_ADDRESS}<br>
 <a href="${trackUnsub(sendId)}" style="color:#9ca3af">Unsubscribe</a>
 </p>`;
 
   const pixel = `<img src="${trackPixel(sendId)}" width="1" height="1" alt="" style="display:block;border:0" />`;
 
-  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${footer}${pixel}</div>`;
+  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${footer}${pixel}</div>`;
 }
 
 function plainWithFooter(plainBody: string, sendId: string): string {

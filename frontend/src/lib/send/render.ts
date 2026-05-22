@@ -6,6 +6,7 @@ Mustache.escape = (t: string) => t;
 const TRACKING_BASE = (process.env.TRACKING_BASE_URL ?? "").replace(/\/$/, "");
 const SENDER_ADDR = process.env.SENDER_PHYSICAL_ADDRESS
   ?? "IIT Bombay, Powai, Mumbai 400076, India";
+const LOGO_URL = process.env.IIT_LOGO_URL ?? "";
 
 export function render(template: string, ctx: Record<string, string>): string {
   return Mustache.render(template ?? "", ctx);
@@ -43,10 +44,13 @@ export function plainToTrackedHtml(plainBody: string, sendId: string): string {
   const bolded = linked.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
-  const footer = `<br><br><p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px">${SENDER_ADDR}<br><a href="${unsubUrl(sendId)}" style="color:#9ca3af">Unsubscribe</a></p>`;
+  const logoBlock = LOGO_URL
+    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    : "";
+  const footer = `<br><br><p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:18px;border-top:1px solid #e5e7eb;padding-top:10px">${SENDER_ADDR}<br><a href="${unsubUrl(sendId)}" style="color:#9ca3af">Unsubscribe</a></p>`;
   const pixel = `<img src="${pixelUrl(sendId)}" width="1" height="1" alt="" style="display:block;border:0" />`;
 
-  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${footer}${pixel}</div>`;
+  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${footer}${pixel}</div>`;
 }
 
 export function plainWithFooter(plainBody: string, sendId: string): string {

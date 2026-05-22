@@ -4,6 +4,7 @@ require("dotenv").config({ path: require("path").join(__dirname, "..", "..", ".e
 const BASE = (process.env.TRACKING_BASE_URL || "").replace(/\/$/, "");
 const SENDER_ADDR = process.env.SENDER_PHYSICAL_ADDRESS
   || "IIT Bombay, Powai, Mumbai 400076, India";
+const LOGO_URL = process.env.IIT_LOGO_URL || "";
 
 function ensureBase() {
   if (!BASE) throw new Error("TRACKING_BASE_URL is not set in .env");
@@ -38,15 +39,19 @@ function plainToTrackedHtml(plainBody, sendId) {
   // Newlines → <br>
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
+  const logoBlock = LOGO_URL
+    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    : "";
+
   const footer = `<br><br>
-<p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px">
+<p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:18px;border-top:1px solid #e5e7eb;padding-top:10px">
 ${SENDER_ADDR}<br>
 <a href="${unsubUrl(sendId)}" style="color:#9ca3af;text-decoration:underline">Unsubscribe</a>
 </p>`;
 
   const pixel = `<img src="${pixelUrl(sendId)}" width="1" height="1" alt="" style="display:block;border:0" />`;
 
-  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${footer}${pixel}</div>`;
+  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${footer}${pixel}</div>`;
 }
 
 /** Plain-text version with unsubscribe footer. Strips **bold** markers so text reads naturally. */
