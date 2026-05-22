@@ -305,6 +305,20 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
 // SCHEDULE ALL pending for tomorrow 10:30 IST
 // ============================================================
 export async function schedulePendingForTomorrow(opts?: { hour?: number; minute?: number }) {
+  return schedulePendingByIds(undefined, opts);
+}
+
+// ============================================================
+// SCHEDULE a specific set of pending drafts for tomorrow
+// ============================================================
+export async function scheduleSelectedForTomorrow(sendIds: string[], opts?: { hour?: number; minute?: number }) {
+  if (!sendIds || sendIds.length === 0) {
+    return { ok: false, error: "No drafts selected." };
+  }
+  return schedulePendingByIds(sendIds, opts);
+}
+
+async function schedulePendingByIds(sendIds: string[] | undefined, opts?: { hour?: number; minute?: number }) {
   const sb = createAdminClient();
   const hour = opts?.hour ?? 10;
   const minute = opts?.minute ?? 30;
@@ -315,8 +329,9 @@ export async function schedulePendingForTomorrow(opts?: { hour?: number; minute?
     hour - 5, minute - 30, 0
   ));
 
-  const { data: pending } = await sb.from("sends").select("id")
-    .eq("status", "pending_approval");
+  let q = sb.from("sends").select("id").eq("status", "pending_approval");
+  if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
+  const { data: pending } = await q;
   if (!pending || pending.length === 0) {
     return { ok: false, error: "No pending drafts to schedule." };
   }
