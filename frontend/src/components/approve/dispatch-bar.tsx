@@ -8,6 +8,7 @@ import { sendAllPendingNow, schedulePendingForTomorrow } from "@/app/actions/sen
 import { GenerateModal } from "./generate-modal";
 
 interface MasterTemplate {
+  template_id: string;
   subject_tmpl: string;
   body_tmpl: string;
   eligible_contacts: number;
@@ -62,7 +63,8 @@ export function DispatchBar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-700">
-        {master && <GenerateModal initial={master} />}
+        {master && <GenerateModal initial={master} mode="edit" />}
+        {master && <GenerateModal initial={master} mode="generate" />}
 
         <Button
           size="sm" onClick={handleSendNow} disabled={disabled || pendingCount === 0}

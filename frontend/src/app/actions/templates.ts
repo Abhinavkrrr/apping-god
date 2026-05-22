@@ -11,6 +11,8 @@ export async function updateTemplate(
   const { error } = await sb.from("templates").update(patch).eq("id", templateId);
   if (error) return { ok: false, error: error.message };
   revalidatePath("/templates");
+  revalidatePath("/approve");
+  revalidatePath("/");
   return { ok: true };
 }
 
@@ -34,5 +36,7 @@ export async function deleteTemplate(templateId: string) {
   const { error } = await sb.from("templates").delete().eq("id", templateId);
   if (error) return { ok: false, error: error.message };
   revalidatePath("/templates");
+  revalidatePath("/approve");
+  revalidatePath("/");
   return { ok: true };
 }

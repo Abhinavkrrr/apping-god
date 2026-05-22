@@ -8,8 +8,9 @@ export const revalidate = 0;
 
 async function loadTemplates() {
   const sb = createAdminClient();
+  // Only show active campaigns (consolidation archived Product + Growth).
   const { data: campaigns } = await sb
-    .from("campaigns").select("id, name").order("name");
+    .from("campaigns").select("id, name").eq("status", "active").order("name");
 
   if (!campaigns) return [];
 

@@ -10,34 +10,48 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
   DialogFooter, DialogTrigger, DialogClose,
 } from "@/components/ui/dialog";
-import { Sparkles, Eye, Loader2 } from "lucide-react";
+import { Sparkles, Eye, Loader2, Pencil, Save } from "lucide-react";
 import { toast } from "sonner";
 import { renderTemplate, plainToBoldHtml, SAMPLE_CTX } from "@/lib/utils/mustache";
-import { generateDrafts } from "@/app/actions/send";
+import { generateDrafts, saveMasterTemplate } from "@/app/actions/send";
 
 const VARS = ["{{first_name}}", "{{company}}", "{{company_brief_one_line}}", "{{full_name}}", "{{title}}"];
 
 interface Props {
   initial: {
+    template_id: string;
     subject_tmpl: string;
     body_tmpl: string;
     eligible_contacts: number;
     total_contacts: number;
   };
+  mode?: "edit" | "generate";
 }
 
-export function GenerateModal({ initial }: Props) {
+export function GenerateModal({ initial, mode = "generate" }: Props) {
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState(initial.subject_tmpl);
   const [body, setBody] = useState(initial.body_tmpl);
   const [useLlm, setUseLlm] = useState(false);
   const [startFresh, setStartFresh] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
+  const [busy, setBusy] = useState<"save" | "generate" | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // When modal opens, re-sync state with the latest server-side initial
+  // (so edits made on Templates page show up here).
+  function handleOpenChange(next: boolean) {
+    if (next) {
+      setSubject(initial.subject_tmpl);
+      setBody(initial.body_tmpl);
+    }
+    setOpen(next);
+  }
 
   const renderedSubject = renderTemplate(subject, SAMPLE_CTX);
   const renderedBody = renderTemplate(body, SAMPLE_CTX);
   const targetCount = startFresh ? initial.total_contacts : initial.eligible_contacts;
+  const isDirty = subject !== initial.subject_tmpl || body !== initial.body_tmpl;
 
   function insertVar(token: string) {
     const ta = document.getElementById("master-body") as HTMLTextAreaElement | null;
@@ -48,6 +62,19 @@ export function GenerateModal({ initial }: Props) {
     setTimeout(() => { ta.focus(); ta.setSelectionRange(start + token.length, start + token.length); }, 0);
   }
 
+  function handleSaveOnly() {
+    if (!isDirty) { toast.info("No changes to save."); return; }
+    setBusy("save");
+    startTransition(async () => {
+      const r = await saveMasterTemplate(initial.template_id, subject, body);
+      setBusy(null);
+      if (r.ok) {
+        toast.success("✓ Template saved.");
+        setOpen(false);
+      } else toast.error(r.error ?? "Save failed.");
+    });
+  }
+
   function handleGenerate() {
     if (targetCount === 0) { toast.error("No eligible contacts."); return; }
     const llmWarning = useLlm
@@ -55,15 +82,17 @@ export function GenerateModal({ initial }: Props) {
       : "";
     if (!confirm(`This will create ${targetCount} draft email(s) using the template you just edited.${llmWarning}\n\nProceed?`)) return;
 
+    setBusy("generate");
     startTransition(async () => {
       toast.info(useLlm
         ? `Generating ${targetCount} personalized drafts... could take ${Math.ceil(targetCount * 2 / 60)} min.`
         : `Generating ${targetCount} drafts... please wait.`);
       const r = await generateDrafts({
-        overrideSubject: subject !== initial.subject_tmpl ? subject : undefined,
-        overrideBody: body !== initial.body_tmpl ? body : undefined,
+        overrideSubject: isDirty ? subject : undefined,
+        overrideBody: isDirty ? body : undefined,
         useLlm, startFresh,
       });
+      setBusy(null);
       if (r.ok) {
         toast.success(`✓ Created ${r.created} draft${r.created === 1 ? "" : "s"}.`);
         setOpen(false);
@@ -73,19 +102,25 @@ export function GenerateModal({ initial }: Props) {
     });
   }
 
+  const triggerLabel = mode === "edit" ? "Edit template" : "Generate drafts";
+  const TriggerIcon = mode === "edit" ? Pencil : Sparkles;
+  const triggerClass = mode === "edit"
+    ? "bg-slate-800 text-white hover:bg-slate-700 border-slate-700"
+    : "bg-white text-slate-900 hover:bg-slate-100 border-white";
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="bg-white text-slate-900 hover:bg-slate-100 border-white">
-          <Sparkles className="h-4 w-4 mr-2" /> Generate drafts
+        <Button variant="outline" size="sm" className={triggerClass}>
+          <TriggerIcon className="h-4 w-4 mr-2" /> {triggerLabel}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-5xl">
         <DialogHeader>
-          <DialogTitle>Generate drafts for all contacts</DialogTitle>
+          <DialogTitle>Master email template</DialogTitle>
           <DialogDescription>
-            Edit the master template below. When you click Generate, this exact template
-            will be applied to every contact (with their name, company, etc. substituted).
+            Edit the subject and body below. Click <strong>Save</strong> to just save edits, or
+            <strong> Generate</strong> to save and create one draft per contact.
             <br />
             <Badge variant="info" className="mt-2">
               {targetCount} draft{targetCount === 1 ? "" : "s"} will be created
@@ -93,6 +128,7 @@ export function GenerateModal({ initial }: Props) {
                 ? ` (replacing all existing pending drafts)`
                 : ` (${initial.total_contacts - initial.eligible_contacts} contacts already drafted, skipped)`}
             </Badge>
+            {isDirty && <Badge variant="warning" className="ml-2 mt-2">Unsaved edits</Badge>}
           </DialogDescription>
         </DialogHeader>
 
@@ -144,14 +180,19 @@ export function GenerateModal({ initial }: Props) {
           )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="gap-2 sm:gap-2">
           <DialogClose asChild>
             <Button variant="ghost" disabled={isPending}>Cancel</Button>
           </DialogClose>
+          <Button variant="outline" onClick={handleSaveOnly} disabled={isPending || !isDirty}>
+            {busy === "save"
+              ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving…</>
+              : <><Save className="h-4 w-4 mr-2" /> Save changes only</>}
+          </Button>
           <Button onClick={handleGenerate} disabled={isPending || targetCount === 0}>
-            {isPending
+            {busy === "generate"
               ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Generating…</>
-              : <><Sparkles className="h-4 w-4 mr-2" /> Generate {targetCount} drafts</>}
+              : <><Sparkles className="h-4 w-4 mr-2" /> Save & generate {targetCount} drafts</>}
           </Button>
         </DialogFooter>
       </DialogContent>
