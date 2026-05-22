@@ -14,48 +14,82 @@ const POOLER = {
 const SUBJECT_TMPL =
   "Exploring Internship Roles in Product Management / Founder's Office / Strategy at {{company}}";
 
-const FIRST_TOUCH_BODY = `Hi {{first_name}},
+const FIRST_TOUCH_BODY = `Dear {{first_name}},
+
+Warm Greetings!
+
+I am Abhinav Kumar, a third-year **Chemical Engineering** undergraduate at **IIT Bombay** (Class of 2027), exploring a **remote internship** at {{company}} in **Product Management**, **Founder's Office**, or **Strategy**.
 
 {{company_brief_one_line}}
 
-Quick intro — I'm Abhinav, 3rd-year Chemical Engineering at IIT Bombay. Last two summers I was PM intern at Turtlemint (shipped an NL→SQL agent that cut analyst load 60%) and AI PM intern at Vijya Fintech (built a multi-agent customer-success chatbot resolving 65% of inbound tickets).
+**Professional Experience:**
 
-I'm looking for a remote summer internship in Product Management, Founder's Office, or Strategy at {{company}}. Would love 15 minutes to chat — or if you can point me to the right person, I'd really appreciate it.
+• **Turtlemint (Product Manager Intern)** – Owned the end-to-end Loan Marketplace customer journey, shipped voice-assistant and credit-score uplift features that boosted user engagement by **32%** and reduced funnel drop-off by **24%** across **15K+** monthly users. Also built a Natural-Language-to-SQL self-serve analytics tool with an LLM agent, cutting data-pull turnaround from 2 days to under 5 minutes and eliminating **60%** of ad-hoc analyst requests.
 
-Resume attached.
+• **Vijya Fintech (AI Product Manager Intern)** – Designed an AI Customer Success Chatbot on a multi-agent architecture that autonomously resolved **65%** of inbound emails and saved the support team **40+ hours weekly**. Built an AI Lead Management System integrating web scrapers, agentic data cleaners, and transformer-based enrichment, **tripling qualified lead throughput** and lifting sales conversion by **22%**.
 
-Best,
-Abhinav Kumar
-+91 6201395251 · LinkedIn`;
+**Key Projects:**
 
-const FOLLOWUP_1_BODY = `Hi {{first_name}},
+• **FMCG Contract Manufacturing & Supply Chain (ShARE, IIT Bombay)** – Secured a **Top 5** position (Special Mention) among 80+ national teams; designed a scalable B2B distribution network projected to generate **₹75 Lakhs** in monthly revenue at an **18%** annual profit margin.
 
-Just floating this back to the top of your inbox in case it got buried.
+• **Future of Automobiles (Consult Club, IIT Guwahati)** – Designed a market entry strategy for BEVs, Green Fuel CNG, and Hybrid vehicles targeting a **$19 billion** segment, with a lifecycle emissions assessment identifying a **25%** reduction in operating expenses.
 
-If a 15-min chat about a remote summer internship at {{company}} isn't the right fit — totally understand. A quick pointer to the right person on your team would also mean a lot.
+• **Equity Research – Tata Power Ltd. (Finance Club, IIT Bombay)** – Conducted full financial valuation; benchmarked P/E, Quick ratio, EPS, and ROE against 3+ competitors and identified technical confluences using MACD and RSI indicators.
 
-Best,
-Abhinav`;
+**Institute Leadership:**
 
-const FOLLOWUP_2_BODY = `Hi {{first_name}},
+• **Associate Secretary, Chemical Engineering Association (ChEA)** – Led a 14-member council representing **800+ students** with a **₹10L budget**; planned and executed flagship events including Convocation, Freshers Orientation, Industrial Visits, and the Student-Industry Meet.
 
-Last note from me — promise.
+• **Hostel Cricket Captain** – Led the hostel team to **2nd position** in the Inter-Hostel Cricket GC and to **victory** in the Intra-Hostel Tournament; completed a 1-year professional cricket training program under the National Sports Organisation.
 
-Still very keen on a remote Product Management, Founder's Office, or Strategy internship at {{company}} this summer. If there's any path in, I'd love to know.
+I am open to a **fully remote internship** of 8–12 weeks and would be grateful for the opportunity to contribute at {{company}}, or to be connected to the right person on your team. My **resume is attached** for your reference.
 
-If now isn't the right time, no worries — happy to circle back later in the year.
+Please feel free to reach out at abhinavkrrr@gmail.com or +91 6201395251.
 
-Best,
-Abhinav`;
+Thank you for your time and consideration.
 
-const FOLLOWUP_3_BODY = `Hi {{first_name}},
+Best Regards,
+**Abhinav Kumar**
++91 6201395251 | LinkedIn
+IIT Bombay | Class of 2027`;
 
-Closing the loop here. If anything opens up at {{company}} down the line — for a Product Management, Founder's Office, or Strategy intern — my inbox is open.
+const FOLLOWUP_1_BODY = `Dear {{first_name}},
 
-Best of luck with everything you're shipping.
+Warm Greetings!
 
-Best,
-Abhinav`;
+Just floating my note from a couple of days ago back to the top of your inbox in case it got buried.
+
+I remain very keen on a **remote internship** at {{company}} in **Product Management**, **Founder's Office**, or **Strategy** — happy to work fully remotely across any timezone you operate in. A 15-minute conversation, or a pointer to the right person on your team, would mean a great deal.
+
+Thank you for your time.
+
+Best Regards,
+**Abhinav Kumar**
++91 6201395251 | LinkedIn`;
+
+const FOLLOWUP_2_BODY = `Dear {{first_name}},
+
+Warm Greetings!
+
+One more follow-up — I promise this will be brief.
+
+I remain very interested in contributing at {{company}} in a **remote** **Product Management**, **Founder's Office**, or **Strategy internship** capacity. If now is not the right moment, I would be glad to reconnect later in the year.
+
+Thank you again for your consideration.
+
+Best Regards,
+**Abhinav Kumar**
++91 6201395251 | LinkedIn`;
+
+const FOLLOWUP_3_BODY = `Dear {{first_name}},
+
+Closing the loop here. If anything opens up at {{company}} down the line for a **remote intern** in **Product Management**, **Founder's Office**, or **Strategy**, my inbox is always open.
+
+Wishing you and the team continued success.
+
+Best Regards,
+**Abhinav Kumar**
++91 6201395251 | LinkedIn`;
 
 (async () => {
   const c = new Client(POOLER);

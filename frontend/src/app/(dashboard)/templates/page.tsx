@@ -1,27 +1,87 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { TemplateEditor } from "@/components/templates/template-editor";
 
-export default function TemplatesPage() {
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+async function loadTemplates() {
+  const sb = createAdminClient();
+  const { data: campaigns } = await sb
+    .from("campaigns").select("id, name").order("name");
+
+  if (!campaigns) return [];
+
+  const groups = await Promise.all(
+    campaigns.map(async (c) => {
+      const { data: templates } = await sb
+        .from("templates").select("*")
+        .eq("campaign_id", c.id)
+        .order("is_followup", { ascending: true })
+        .order("followup_step", { ascending: true, nullsFirst: true });
+      return { campaign: c, templates: templates ?? [] };
+    })
+  );
+  return groups;
+}
+
+export default async function TemplatesPage() {
+  const groups = await loadTemplates();
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Templates</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Author the email body and subject. Insert {"{{first_name}}"}, {"{{company}}"}, {"{{company_brief_one_line}}"}.
+          Click <strong>Edit</strong> on any template to change the subject, body, or insert
+          variables. Use <code className="rounded bg-slate-100 px-1 text-xs">{`{{first_name}}`}</code>,
+          <code className="rounded bg-slate-100 px-1 text-xs mx-1">{`{{company}}`}</code>, etc., and
+          <code className="rounded bg-slate-100 px-1 text-xs ml-1">**bold**</code> for emphasis.
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Default template (locked for v1)</CardTitle>
-          <CardDescription>
-            Subject: <em>Exploring Internship Roles in Product Management / Founder&apos;s Office / Strategy at {"{{company}}"}</em>
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="text-sm text-slate-600 space-y-2">
-          <p>One template + three threaded follow-ups (day 2, 4, 6).</p>
-          <p>Editing UI ships in Phase 3.</p>
-        </CardContent>
-      </Card>
+      {groups.map(({ campaign, templates }) => (
+        <Card key={campaign.id}>
+          <CardHeader className="border-b border-slate-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  {campaign.name}
+                  <Badge variant="info">{templates.length} templates</Badge>
+                </CardTitle>
+                <CardDescription>
+                  4-step sequence: first-touch + 3 follow-ups (Day 0 → 2 → 4 → 6).
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="divide-y divide-slate-100 p-0">
+            {templates.map((t) => (
+              <div key={t.id} className="flex items-start justify-between gap-4 p-4 hover:bg-slate-50">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-medium text-slate-900">
+                      {t.is_followup ? `Follow-up #${t.followup_step}` : "First touch"}
+                    </span>
+                    <Badge variant="default">{t.variant_label}</Badge>
+                    <Badge variant={t.personalization_level === "medium" ? "success" : "default"}>
+                      {t.personalization_level}
+                    </Badge>
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1 line-clamp-1 font-medium">
+                    {t.subject_tmpl}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5 line-clamp-2 whitespace-pre-wrap">
+                    {t.body_tmpl.slice(0, 200)}…
+                  </div>
+                </div>
+                <TemplateEditor template={t} campaignName={campaign.name} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }

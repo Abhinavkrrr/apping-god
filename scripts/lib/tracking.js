@@ -32,8 +32,11 @@ function plainToTrackedHtml(plainBody, sendId) {
     (url) => `<a href="${clickUrl(sendId, url)}" style="color:#0366d6;text-decoration:underline">${url}</a>`
   );
 
+  // Markdown-style bold: **word** → <strong>word</strong>
+  const bolded = linked.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+
   // Newlines → <br>
-  const withBreaks = linked.replace(/\n/g, "<br>\n");
+  const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
   const footer = `<br><br>
 <p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px">
@@ -46,9 +49,10 @@ ${SENDER_ADDR}<br>
   return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${footer}${pixel}</div>`;
 }
 
-/** Plain-text version with unsubscribe footer (no pixel, no link rewriting). */
+/** Plain-text version with unsubscribe footer. Strips **bold** markers so text reads naturally. */
 function plainWithFooter(plainBody, sendId) {
-  return `${plainBody}\n\n---\n${SENDER_ADDR}\nUnsubscribe: ${unsubUrl(sendId)}\n`;
+  const stripped = plainBody.replace(/\*\*([^*\n]+?)\*\*/g, '$1');
+  return `${stripped}\n\n---\n${SENDER_ADDR}\nUnsubscribe: ${unsubUrl(sendId)}\n`;
 }
 
 module.exports = { pixelUrl, clickUrl, unsubUrl, plainToTrackedHtml, plainWithFooter };

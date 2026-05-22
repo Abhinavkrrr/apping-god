@@ -63,7 +63,10 @@ function plainToTrackedHtml(plainBody: string, sendId: string): string {
       `<a href="${trackClick(sendId, url)}" style="color:#0366d6">${url}</a>`,
   );
 
-  const withBreaks = linked.replace(/\n/g, "<br>\n");
+  // Markdown-style bold: **word** → <strong>word</strong>
+  const bolded = linked.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+
+  const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
   const footer = `<br><br>
 <p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:10px">

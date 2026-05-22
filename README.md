@@ -3,57 +3,50 @@
 > Automated, personalized cold-outreach system for jobs & internships.
 > Built for Abhinav Kumar (IIT Bombay, Chemical Engineering, Class of 2027).
 
-[![Built with](https://img.shields.io/badge/Built%20with-Next.js%20%7C%20Supabase%20%7C%20Cloudflare%20Workers-blue)](#stack)
+[![Stack](https://img.shields.io/badge/Stack-Next.js%20%7C%20Supabase%20%7C%20Cloudflare%20Workers-blue)](#stack)
 [![Cost](https://img.shields.io/badge/Cost-%240%2Fmonth-success)](#cost)
-
----
-
-## What it does
-
-Send 100–200 highly-personalized cold emails per day to recruiters, hiring managers, founders, and decision-makers — with:
-
-- Human-in-the-loop approval queue (10 min/day review)
-- LLM-rewritten opener per company (Gemini)
-- 3-step automatic follow-up sequence (Day 2 / Day 4 / Day 6)
-- Reply detection + classification (positive / negative / OOO / auto-reply)
-- Multi-Gmail-account rotation with daily caps + warmup ramping
-- Open / click / reply tracking
-- 6-section analytics dashboard
-
-All on **free-tier infrastructure** — no credit card required.
 
 ---
 
 ## Status
 
-**Phase 1 — Foundations: ✅ complete**
-
-- [x] Monorepo scaffolded
-- [x] `.gitignore` + `.env.example` (secrets safe)
-- [x] Next.js 14 + Tailwind + shadcn-style UI
-- [x] Supabase Postgres schema applied (12 tables + RLS + seed campaigns)
-- [x] Edge Function skeletons (scheduler, send-worker, followup-daemon, reply-poller, csv-importer)
-- [x] Cloudflare Worker for tracking pixel + click redirect + unsubscribe
-- [x] Windows `run.bat` launcher
-- [ ] Phase 2 — full SMTP send pipeline
-- [ ] Phase 3 — approval queue + LLM personalization
-- [ ] Phase 4 — reply detection + follow-up daemon
-- [ ] Phase 5 — Apollo / Hunter / Snov enrichment
-- [ ] Phase 6 — analytics dashboard
+- ✅ **Phase 1** — foundations, schema, 519 contacts seeded
+- ✅ **Phase 2** — send pipeline (Edge Function + Cloudflare tracking) — **first real email sent**
+- ✅ **Phase 3** — editable dashboard, approval queue, generate-drafts pipeline
+- ✅ **Phase 4** — reply detection + follow-up daemon Edge Functions
+- 🟡 **Phase 4.3** — `pg_cron` schedules (functions ready, cron wiring TBD via SQL)
+- ✅ **Phase 5 partial** — SMTP verifier + Apollo enricher (Hunter/Snov optional)
+- ✅ **Phase 6** — analytics dashboard (funnel + per-campaign + activity log)
 
 ---
 
-## Quick start (Windows)
+## Daily workflow
 
+### 1. Tag contacts to a campaign
+The seed CSV has `campaign_tag` already set (VC / Product / Growth). Add new contacts with the same tag.
+
+### 2. Activate the campaign you want to run
+Dashboard → **Campaigns** → click Edit → set status **Active**.
+
+### 3. Generate drafts (CLI for now; UI in next phase)
 ```cmd
-git clone https://github.com/Abhinavkrrr/apping-god.git
-cd apping-god
-copy .env.example .env
-REM ... fill in .env (see Credentials Inventory below)
-run.bat
+node scripts/generate_drafts.js --llm --limit 25
 ```
+Creates 25 `pending_approval` rows tailored to each recipient.
 
-Dashboard opens at **http://localhost:3000**.
+### 4. Approve in dashboard
+**Approve** tab → review → click **Approve** (or bulk) → click **Send now** for immediate dispatch.
+
+### 5. Dispatcher drains the approved queue
+```cmd
+node scripts/dispatch_approved.js --limit 35
+```
+Or run from cron / Edge Function for full automation.
+
+### 6. Replies + opens flow back automatically
+- Open pixel fires when recipient opens email (logged via Cloudflare Worker)
+- Reply-poller (Supabase Edge Function) checks Gmail IMAP every 2 min, classifies via Groq
+- Follow-up daemon generates next step at Day 2/4/6 if no reply
 
 ---
 
@@ -61,92 +54,75 @@ Dashboard opens at **http://localhost:3000**.
 
 ```
 apping-god/
-├─ frontend/               Next.js 14 dashboard (App Router + Tailwind)
-│  ├─ src/app/             Routes: /, /campaigns, /contacts, /templates, ...
-│  ├─ src/lib/supabase/    Supabase clients (browser, server, admin)
-│  ├─ src/components/      UI + layout
-│  └─ src/types/           Database types
+├─ frontend/                       Next.js 14 dashboard
+│  └─ src/
+│     ├─ app/                      Routes + server actions
+│     │  ├─ (dashboard)/           Dashboard pages
+│     │  ├─ actions/               Server actions (templates, campaigns, …)
+│     │  └─ login/
+│     ├─ components/               UI primitives + page components
+│     └─ lib/                      Supabase clients, mustache renderer
 ├─ backend/
 │  ├─ supabase/
-│  │  ├─ migrations/       SQL schema migrations
-│  │  └─ functions/        Edge Functions (Deno)
-│  └─ workers/             Cloudflare Worker (tracking pixel)
-├─ scripts/                Migration runner, CSV import, utilities
-├─ docs/                   ARCHITECTURE.md, SOW.docx, RUNBOOK.md
-├─ .env.example            Required env vars
-├─ run.bat                 Windows one-click launcher
-└─ README.md
+│  │  ├─ migrations/               20260523000001_initial_schema.sql
+│  │  └─ functions/
+│  │     ├─ send-worker/           SMTP send via denomailer
+│  │     ├─ reply-poller/          IMAP poll + Groq classify
+│  │     ├─ followup-daemon/       Generate next follow-up draft
+│  │     ├─ scheduler/             (Phase 4.3 cron-driven dispatcher)
+│  │     └─ csv-importer/          (Phase 5+ via UI)
+│  └─ workers/                     Cloudflare Worker (tracking pixel + click + unsub)
+├─ scripts/                        CLI tooling
+│  ├─ apply_migration.js           Apply schema to Supabase (auto-detects region)
+│  ├─ seed_csv.js                  Load 525-contact seed CSV
+│  ├─ seed_templates.js            Insert default templates (1 + 3 followups × 3 campaigns)
+│  ├─ upload_resume.js             Upload PDF to Supabase Storage
+│  ├─ deploy_function.js           Deploy any Edge Function via Management API
+│  ├─ generate_drafts.js           Build the approval queue (with optional Gemini)
+│  ├─ dispatch_approved.js         Drain approved queue via Edge Function
+│  ├─ send_one.js                  Single-shot test send
+│  ├─ check_events.js              Tail events for most-recent send
+│  ├─ verify_emails.js             SMTP-based deliverability check
+│  ├─ enrich_apollo.js             Fill missing titles / LinkedIn from Apollo
+│  └─ lib/                         Shared: supabase, render, llm, tracking, sender
+├─ docs/                           ARCHITECTURE.md, SOW.docx
+├─ .env.example                    Shape of required env vars
+└─ run.bat                         Windows launcher
 ```
 
 ---
 
 ## Stack
 
-| Layer | Tech |
-|---|---|
-| Frontend | Next.js 14, TypeScript, Tailwind, shadcn/ui patterns, Recharts, TanStack Table |
-| Database | Supabase Postgres 15 + RLS |
-| Auth | Supabase magic-link |
-| Backend cron | Supabase Edge Functions (Deno) + pg_cron |
-| Tracking | Cloudflare Workers |
-| Heavy jobs | GitHub Actions |
-| LLM | Gemini 2.0 Flash (personalization), Groq Llama 3.3 70B (classification) |
-| Email send | Gmail SMTP via App Password + nodemailer (multi-account rotation) |
-| Email receive | Gmail IMAP polling every 2 min |
-| Enrichment | Apollo, Hunter, Snov free tiers |
+| Layer | Tech | Status |
+|---|---|---|
+| Frontend | Next.js 14, Tailwind, shadcn-style UI | ✅ |
+| Database | Supabase Postgres + RLS | ✅ |
+| Cron / async | Supabase Edge Functions (Deno) | ✅ |
+| Tracking | Cloudflare Workers | ✅ |
+| Email send | Gmail SMTP (port 465) via `denomailer` in Edge Function | ✅ |
+| Email receive | Gmail IMAP via `imapflow` in Edge Function | ✅ |
+| Personalization LLM | Gemini 2.0 Flash | ✅ |
+| Reply classification LLM | Groq Llama 3.3 70B | ✅ |
+| Enrichment | Apollo, Hunter, Snov + SMTP verify | ✅ |
+| File storage | Supabase Storage (resumes/) | ✅ |
+| Auth | Supabase magic link | ✅ (gate disabled in v1) |
+| Heavy jobs | GitHub Actions (LinkedIn scrape) | 🟡 Phase 5+ |
 
 ---
 
 ## Cost
 
-| Service | Free quota | Forecast |
-|---|---|---|
-| Supabase | 500 MB Postgres, 500k Edge fn / mo | ~50 MB/yr, ~50k/mo |
-| Vercel | 100 GB bandwidth | Trivial |
-| Cloudflare Workers | 100k req/day | ~1k/day |
-| GitHub Actions | 2000 min/mo | ~400 min/mo |
-| Gemini 2.0 Flash | 1500 req/day | ~250/day |
-| Groq | 14,400 req/day | ~50/day |
-| **Total** | | **$0/month** |
-
----
-
-## Credentials inventory
-
-All stored in `.env` (gitignored). See `.env.example` for shape.
-
-| Var | How to obtain |
-|---|---|
-| `GMAIL_USER` / `GMAIL_APP_PASSWORD` | https://myaccount.google.com/apppasswords |
-| `NEXT_PUBLIC_SUPABASE_URL` / `ANON_KEY` / `SERVICE_ROLE_KEY` | Supabase Dashboard → Settings → API |
-| `SUPABASE_DB_PASSWORD` | Supabase Dashboard → Settings → Database |
-| `GEMINI_API_KEY` | https://aistudio.google.com/apikey |
-| `GROQ_API_KEY` | https://console.groq.com/keys |
-| `APOLLO_API_KEY` | Apollo → Settings → Integrations → API |
-| `HUNTER_API_KEY` | Hunter → API tab |
-| `SNOV_USER_ID` / `SNOV_API_SECRET` | Snov → Settings → API |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare → Profile → API Tokens → Edit Workers |
-| `GITHUB_PAT` | GitHub → Settings → Developer Settings → PAT (fine-grained) |
-
----
-
-## Documentation
-
-- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — full system architecture, data model, flows
-- **`docs/SOW.docx`** — formal Statement of Work
-- **`docs/RUNBOOK.md`** — operational procedures (ships in Phase 6)
-
----
-
-## Migration / re-apply schema
-
-```bash
-cd scripts
-npm install     # first time
-node apply_migration.js
-```
-
-The script auto-discovers your Supabase pooler region.
+| Service | Free quota | Used | Headroom |
+|---|---|---|---|
+| Supabase Postgres | 500 MB | ~50 MB/yr | 10× |
+| Supabase Edge Fn | 500k/mo | ~50k/mo | 10× |
+| Cloudflare Workers | 100k/day | ~1k/day | 100× |
+| GitHub Actions | 2000 min/mo | ~400 min/mo | 5× |
+| Gemini 2.0 Flash | 1500/day | ~250/day | 6× |
+| Groq | 14,400/day | ~50/day | 280× |
+| Vercel | 100 GB | tiny | huge |
+| **Total** | | | **$0/month** |
 
 ---
 
