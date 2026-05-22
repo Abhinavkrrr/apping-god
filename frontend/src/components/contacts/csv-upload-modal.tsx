@@ -59,16 +59,32 @@ export function CsvUploadModal() {
   }
 
   function handleImport() {
-    if (rows.length === 0) { toast.error("No rows parsed."); return; }
+    if (rows.length === 0) { toast.error("No rows parsed — pick a CSV file first."); return; }
     if (!batchLabel.trim()) { toast.error("Give this batch a name so you can find it later."); return; }
-    if (!confirm(`Import ${rows.length} contacts under batch "${batchLabel.trim()}"?`)) return;
+    if (!confirm(`Import ${rows.length} contacts under batch "${batchLabel.trim()}"?\n\nDuplicate emails will be UPDATED (new batch tag added).`)) return;
     startTransition(async () => {
-      toast.info(`Importing ${rows.length}...`);
-      const r = await bulkImportContacts(rows, batchLabel.trim());
-      if (r.ok) {
-        toast.success(`✓ Imported: ${r.imported} · Failed: ${r.failed}`);
-        setOpen(false); setRows([]); setErrors([]); setBatchLabel("");
-      } else toast.error("Import failed.");
+      toast.info(`Importing ${rows.length} contacts... this may take ${Math.max(5, Math.ceil(rows.length * 0.1))}s.`);
+      try {
+        const r = await bulkImportContacts(rows, batchLabel.trim());
+        if (r.ok) {
+          const parts: string[] = [];
+          if (r.imported > 0) parts.push(`✓ ${r.imported} new`);
+          if (r.updated > 0) parts.push(`↻ ${r.updated} updated`);
+          if (r.failed > 0) parts.push(`✗ ${r.failed} failed`);
+          toast.success(parts.join(" · ") || "Done.");
+          if (r.failed > 0 && r.sample_errors?.length) {
+            console.error("Import failures:", r.sample_errors);
+            toast.warning(`First error: ${r.sample_errors[0]}`);
+          }
+          setOpen(false); setRows([]); setErrors([]); setBatchLabel("");
+        } else {
+          toast.error("Import failed — check console.");
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("Import threw:", e);
+        toast.error(`Import threw: ${msg.slice(0, 120)}`);
+      }
     });
   }
 
