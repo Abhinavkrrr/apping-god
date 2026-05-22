@@ -6,6 +6,7 @@ import { Send, Moon, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { sendAllPendingNow, schedulePendingForTomorrow } from "@/app/actions/send";
 import { GenerateModal } from "./generate-modal";
+import { QuickAddModal } from "./quick-add-modal";
 
 interface MasterTemplate {
   template_id: string;
@@ -65,6 +66,7 @@ export function DispatchBar({
       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-700">
         {master && <GenerateModal initial={master} mode="edit" />}
         {master && <GenerateModal initial={master} mode="generate" />}
+        <QuickAddModal />
 
         <Button
           size="sm" onClick={handleSendNow} disabled={disabled || pendingCount === 0}

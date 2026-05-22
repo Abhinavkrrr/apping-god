@@ -50,7 +50,7 @@ Thank you for your time and consideration.
 
 Best Regards,
 **Abhinav Kumar**
-+91 6201395251 | LinkedIn
++91 6201395251 | [LinkedIn](https://www.linkedin.com/in/abhinav-kumar-499004280/)
 IIT Bombay | Class of 2027`;
 
 const FOLLOWUP_1_BODY = `Dear {{first_name}},
@@ -65,7 +65,7 @@ Thank you for your time.
 
 Best Regards,
 **Abhinav Kumar**
-+91 6201395251 | LinkedIn`;
++91 6201395251 | [LinkedIn](https://www.linkedin.com/in/abhinav-kumar-499004280/)`;
 
 const FOLLOWUP_2_BODY = `Dear {{first_name}},
 
@@ -79,7 +79,7 @@ Thank you again for your consideration.
 
 Best Regards,
 **Abhinav Kumar**
-+91 6201395251 | LinkedIn`;
++91 6201395251 | [LinkedIn](https://www.linkedin.com/in/abhinav-kumar-499004280/)`;
 
 const FOLLOWUP_3_BODY = `Dear {{first_name}},
 
@@ -89,7 +89,7 @@ Wishing you and the team continued success.
 
 Best Regards,
 **Abhinav Kumar**
-+91 6201395251 | LinkedIn`;
++91 6201395251 | [LinkedIn](https://www.linkedin.com/in/abhinav-kumar-499004280/)`;
 
 (async () => {
   const c = new Client(POOLER);

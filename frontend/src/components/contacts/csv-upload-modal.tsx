@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
   DialogFooter, DialogTrigger, DialogClose,
@@ -25,9 +26,14 @@ export function CsvUploadModal() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
+  const [batchLabel, setBatchLabel] = useState("");
   const [isPending, startTransition] = useTransition();
 
   function handleFile(file: File) {
+    // Auto-fill batch name from filename (stripped of extension)
+    if (!batchLabel) {
+      setBatchLabel(file.name.replace(/\.[^.]+$/, "").trim());
+    }
     Papa.parse<Record<string, string>>(file, {
       header: true, skipEmptyLines: true,
       complete: (res) => {
@@ -54,13 +60,14 @@ export function CsvUploadModal() {
 
   function handleImport() {
     if (rows.length === 0) { toast.error("No rows parsed."); return; }
-    if (!confirm(`Import ${rows.length} contacts?`)) return;
+    if (!batchLabel.trim()) { toast.error("Give this batch a name so you can find it later."); return; }
+    if (!confirm(`Import ${rows.length} contacts under batch "${batchLabel.trim()}"?`)) return;
     startTransition(async () => {
       toast.info(`Importing ${rows.length}...`);
-      const r = await bulkImportContacts(rows);
+      const r = await bulkImportContacts(rows, batchLabel.trim());
       if (r.ok) {
         toast.success(`✓ Imported: ${r.imported} · Failed: ${r.failed}`);
-        setOpen(false); setRows([]); setErrors([]);
+        setOpen(false); setRows([]); setErrors([]); setBatchLabel("");
       } else toast.error("Import failed.");
     });
   }
@@ -84,8 +91,22 @@ export function CsvUploadModal() {
         </DialogHeader>
 
         <div className="space-y-3">
-          <Input type="file" accept=".csv,text/csv"
-            onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+          <div>
+            <Label>Batch name *</Label>
+            <Input value={batchLabel} onChange={(e) => setBatchLabel(e.target.value)}
+              placeholder="e.g. VCs March 2026, AI startups, Razorpay contacts"
+              className="mt-1" />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Every contact in this CSV gets tagged with this batch — so you can filter and generate drafts
+              just for this batch later.
+            </p>
+          </div>
+          <div>
+            <Label>CSV file</Label>
+            <Input type="file" accept=".csv,text/csv"
+              onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+              className="mt-1" />
+          </div>
 
           {rows.length > 0 && (
             <div className="border border-slate-200 rounded-md p-3 bg-slate-50">
@@ -106,7 +127,7 @@ export function CsvUploadModal() {
 
         <DialogFooter>
           <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
-          <Button onClick={handleImport} disabled={isPending || rows.length === 0}>
+          <Button onClick={handleImport} disabled={isPending || rows.length === 0 || !batchLabel.trim()}>
             {isPending
               ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Importing…</>
               : `Import ${rows.length} contacts`}

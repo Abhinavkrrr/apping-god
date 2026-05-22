@@ -8,6 +8,7 @@ import {
   FileText,
   FileUser,
   CheckSquare,
+  Clock,
   Inbox,
   BarChart3,
   Settings,
@@ -21,7 +22,8 @@ const nav = [
   { href: "/templates", label: "Templates", icon: FileText },
   { href: "/resumes", label: "Resumes", icon: FileUser },
   { href: "/approve", label: "Approve & Send", icon: CheckSquare },
-  { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/followups", label: "Follow-ups", icon: Clock },
+  { href: "/inbox", label: "Reply inbox", icon: Inbox },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

@@ -37,15 +37,24 @@ function unsubUrl(sendId: string) { return `${TRACKING_BASE}/t/unsub/${sendId}`;
 export function plainToTrackedHtml(plainBody: string, sendId: string): string {
   const escaped = plainBody
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const linked = escaped.replace(
-    /(https?:\/\/[^\s<>"]+)/g,
+
+  // Markdown links first: [text](url) → <a href="url">text</a>
+  const mdLinked = escaped.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_m, text, url) => `<a href="${clickUrl(sendId, url)}" style="color:#0366d6;text-decoration:underline">${text}</a>`,
+  );
+
+  // Then any remaining bare URLs
+  const linked = mdLinked.replace(
+    /(?<!["'>])(https?:\/\/[^\s<>"]+)/g,
     (url) => `<a href="${clickUrl(sendId, url)}" style="color:#0366d6">${url}</a>`,
   );
+
   const bolded = linked.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
   const logoBlock = LOGO_URL
-    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" style="display:block;border:0;margin-top:8px;max-width:120px;height:auto" />`
     : "";
   // No unsubscribe footer (per user preference - personal outreach feel).
   const pixel = `<img src="${pixelUrl(sendId)}" width="1" height="1" alt="" style="display:block;border:0" />`;
@@ -54,5 +63,7 @@ export function plainToTrackedHtml(plainBody: string, sendId: string): string {
 }
 
 export function plainWithFooter(plainBody: string, _sendId: string): string {
-  return plainBody.replace(/\*\*([^*\n]+?)\*\*/g, "$1");
+  return plainBody
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)")
+    .replace(/\*\*([^*\n]+?)\*\*/g, "$1");
 }

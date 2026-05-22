@@ -37,11 +37,11 @@ export default async function InboxPage() {
           <CardHeader>
             <CardTitle>No replies yet</CardTitle>
             <CardDescription>
-              The reply-poller runs every 2 min via pg_cron (after Phase 4.3 wiring).
-              You can trigger it manually:<br />
-              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs mt-1 inline-block">
-                curl -X POST -H &quot;Authorization: Bearer $SERVICE_ROLE_KEY&quot; https://ouzfrefnhlxhpeyufllt.functions.supabase.co/reply-poller
-              </code>
+              The reply-poller runs <strong>every 5 minutes</strong> in the background (Supabase pg_cron + IMAP fetch).
+              When recipients reply, they appear here automatically — classified into{" "}
+              <em>positive / negative / out-of-office / auto-reply / question</em> by Groq Llama 3.3.
+              <br /><br />
+              Threads with detected replies are also removed from the Follow-ups queue automatically.
             </CardDescription>
           </CardHeader>
         </Card>

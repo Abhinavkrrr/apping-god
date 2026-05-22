@@ -58,8 +58,16 @@ function plainToTrackedHtml(plainBody: string, sendId: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-  const linked = escaped.replace(
-    /(https?:\/\/[^\s<>"]+)/g,
+  // Markdown links first: [text](url) → <a href="url">text</a>
+  const mdLinked = escaped.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_m, text, url) =>
+      `<a href="${trackClick(sendId, url)}" style="color:#0366d6;text-decoration:underline">${text}</a>`,
+  );
+
+  // Then any remaining bare URLs
+  const linked = mdLinked.replace(
+    /(?<!["'>])(https?:\/\/[^\s<>"]+)/g,
     (url) =>
       `<a href="${trackClick(sendId, url)}" style="color:#0366d6">${url}</a>`,
   );
@@ -70,7 +78,7 @@ function plainToTrackedHtml(plainBody: string, sendId: string): string {
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
   const logoBlock = IIT_LOGO_URL
-    ? `<br><br><img src="${IIT_LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    ? `<br><br><img src="${IIT_LOGO_URL}" alt="IIT Bombay" style="display:block;border:0;margin-top:8px;max-width:120px;height:auto" />`
     : "";
 
   // No unsubscribe footer (per user preference - personal outreach feel).

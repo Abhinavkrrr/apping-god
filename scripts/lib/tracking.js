@@ -27,9 +27,16 @@ function plainToTrackedHtml(plainBody, sendId) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-  // Auto-link bare URLs
-  const linked = escaped.replace(
-    /(https?:\/\/[^\s<>"]+)/g,
+  // Markdown-style links FIRST: [text](url) → <a href="url">text</a>
+  // (must come before auto-link so we don't double-wrap)
+  const mdLinked = escaped.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_m, text, url) => `<a href="${clickUrl(sendId, url)}" style="color:#0366d6;text-decoration:underline">${text}</a>`
+  );
+
+  // Auto-link any remaining bare URLs
+  const linked = mdLinked.replace(
+    /(?<!["'>])(https?:\/\/[^\s<>"]+)/g,
     (url) => `<a href="${clickUrl(sendId, url)}" style="color:#0366d6;text-decoration:underline">${url}</a>`
   );
 
@@ -40,7 +47,7 @@ function plainToTrackedHtml(plainBody, sendId) {
   const withBreaks = bolded.replace(/\n/g, "<br>\n");
 
   const logoBlock = LOGO_URL
-    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
+    ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" style="display:block;border:0;margin-top:8px;max-width:120px;height:auto" />`
     : "";
 
   // No unsubscribe footer (per user preference - personal outreach feel).
@@ -49,9 +56,11 @@ function plainToTrackedHtml(plainBody, sendId) {
   return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${pixel}</div>`;
 }
 
-/** Plain-text version. Strips **bold** markers so text reads naturally. */
+/** Plain-text version. Strips **bold** markers + converts [text](url) → "text (url)" for readability. */
 function plainWithFooter(plainBody, _sendId) {
-  return plainBody.replace(/\*\*([^*\n]+?)\*\*/g, '$1');
+  return plainBody
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)")
+    .replace(/\*\*([^*\n]+?)\*\*/g, '$1');
 }
 
 module.exports = { pixelUrl, clickUrl, unsubUrl, plainToTrackedHtml, plainWithFooter };
