@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Pause, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteAccount, pauseAccount, resumeAccount } from "@/app/actions/accounts";
+import { EditCapButton } from "./edit-cap-button";
 
 interface Props {
   account: {
@@ -62,6 +63,7 @@ export function AccountRow({ account: a }: Props) {
           )}
         </div>
       </div>
+      <EditCapButton accountId={a.id} currentCap={a.daily_cap} email={a.email} />
       <Button variant="outline" size="sm" onClick={togglePause} disabled={isPending}>
         {isPaused ? <><Play className="h-3.5 w-3.5 mr-1" /> Resume</> : <><Pause className="h-3.5 w-3.5 mr-1" /> Pause 24h</>}
       </Button>

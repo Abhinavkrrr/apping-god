@@ -103,6 +103,25 @@ export default async function AnalyticsPage() {
             <FunnelBar label="Opened" value={totals.opened} max={maxFunnel} color="bg-blue-500" />
             <FunnelBar label="Clicked" value={totals.clicked} max={maxFunnel} color="bg-violet-500" />
             <FunnelBar label="Replied" value={totals.replies} max={maxFunnel} color="bg-emerald-500" />
+
+            <div className="text-[11px] text-slate-500 leading-relaxed mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+              <div>
+                <span className="font-medium text-slate-700">Sent</span> — email accepted by Gmail SMTP.
+              </div>
+              <div>
+                <span className="font-medium text-slate-700">Opened</span> — recipient loaded the email
+                (tracked via 1×1 pixel). Often &gt; 100% because Gmail&apos;s image proxy re-fires every
+                time they reopen the thread.
+              </div>
+              <div>
+                <span className="font-medium text-slate-700">Clicked</span> — recipient clicked a link
+                in the body (LinkedIn, etc.). Higher intent than opens.
+              </div>
+              <div>
+                <span className="font-medium text-slate-700">Replied</span> — they sent an email back
+                (detected via IMAP). The number that actually matters.
+              </div>
+            </div>
           </CardContent>
         </Card>
 
