@@ -1,0 +1,65 @@
+# ===== SECRETS (NEVER COMMIT) =====
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.pem
+*.key
+secrets/
+credentials/
+
+# ===== Node / Next.js =====
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# ===== Logs =====
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+logs/
+
+# ===== Supabase =====
+backend/supabase/.branches
+backend/supabase/.temp
+backend/supabase/.env
+
+# ===== Cloudflare Workers =====
+backend/workers/.wrangler
+backend/workers/.dev.vars
+backend/workers/dist/
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ===== Python (for scripts) =====
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# ===== Local data =====
+*.sqlite
+*.db
+local_data/
+tmp/
+
+# ===== Test / Coverage =====
+coverage/
+.nyc_output/
+
+# ===== Generated docs we keep elsewhere =====
+generate_sow.js

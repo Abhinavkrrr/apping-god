@@ -1,0 +1,17 @@
+name = "track-apping"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Cron triggers for periodic work (Phase 4)
+[triggers]
+crons = []  # e.g. ["*/2 * * * *"] for reply poll
+
+[vars]
+TRACKING_BASE_URL = "https://track-apping.<your-subdomain>.workers.dev"
+
+# Secrets (set via: wrangler secret put SUPABASE_URL, etc.)
+# - SUPABASE_URL
+# - SUPABASE_SERVICE_ROLE_KEY
+
+[observability]
+enabled = true
