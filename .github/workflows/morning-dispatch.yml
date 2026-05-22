@@ -1,0 +1,79 @@
+name: Morning dispatch
+
+# Runs daily at 05:00 UTC = 10:30 AM IST
+# Drains any approved sends with scheduled_at <= now.
+#
+# Setup (one-time):
+#   In repo Settings → Secrets and variables → Actions, add:
+#     SUPABASE_URL                = https://ouzfrefnhlxhpeyufllt.supabase.co
+#     SUPABASE_SERVICE_ROLE_KEY   = (your service-role key)
+#     SUPABASE_DB_PASSWORD        = (your db password)
+#     GMAIL_USER                  = abhinavkrrr@gmail.com
+#     GMAIL_APP_PASSWORD          = (your app password)
+#     GEMINI_API_KEY              = (your Gemini key)
+#     TRACKING_BASE_URL           = https://track-apping.abhinavkrrr.workers.dev
+#     SENDER_NAME                 = Abhinav Kumar
+#     SENDER_EMAIL                = abhinavkrrr@gmail.com
+#     SENDER_PHONE                = +91 6201395251
+#     SENDER_LINKEDIN             = https://www.linkedin.com/in/abhinav-kumar-499004280/
+#     SENDER_PHYSICAL_ADDRESS     = IIT Bombay, Powai, Mumbai 400076, India
+#     SUPABASE_PROJECT_REF        = ouzfrefnhlxhpeyufllt
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # 5:00 UTC = 10:30 AM IST
+  workflow_dispatch: {}     # also allow manual trigger from Actions tab
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: Install script deps
+        working-directory: scripts
+        run: npm install
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env <<EOF
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF=${{ secrets.SUPABASE_PROJECT_REF }}
+          GMAIL_USER=${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          TRACKING_BASE_URL=${{ secrets.TRACKING_BASE_URL }}
+          SENDER_NAME=${{ secrets.SENDER_NAME }}
+          SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}
+          SENDER_PHONE=${{ secrets.SENDER_PHONE }}
+          SENDER_LINKEDIN=${{ secrets.SENDER_LINKEDIN }}
+          SENDER_PHYSICAL_ADDRESS=${{ secrets.SENDER_PHYSICAL_ADDRESS }}
+          EOF
+
+      - name: Drain approved queue
+        run: node scripts/dispatch_approved.js --limit 50
+
+      - name: Generate followups (next morning's queue)
+        continue-on-error: true
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.SUPABASE_URL }}/functions/v1/followup-daemon" \
+            -d '{}'
+
+      - name: Poll for replies
+        continue-on-error: true
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.SUPABASE_URL }}/functions/v1/reply-poller" \
+            -d '{}'

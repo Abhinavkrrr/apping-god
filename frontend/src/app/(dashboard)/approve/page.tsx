@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ApprovalList } from "@/components/approve/approval-list";
+import { DispatchBar } from "@/components/approve/dispatch-bar";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -42,16 +43,15 @@ export default async function ApprovePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Approval queue</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            <Badge variant={drafts.length > 0 ? "info" : "default"} className="mr-2">{total} pending</Badge>
-            Review each draft. <strong>Approve</strong> queues it for the next send window;{" "}
-            <strong>Send now</strong> dispatches immediately via the Edge Function.
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Approval queue</h1>
+        <p className="text-sm text-slate-500 mt-1">
+          <Badge variant={drafts.length > 0 ? "info" : "default"} className="mr-2">{total} pending</Badge>
+          Use the buttons below to generate, send, or schedule the whole batch. Per-row controls let you fine-tune individual sends.
+        </p>
       </div>
+
+      <DispatchBar pendingCount={total} />
 
       {drafts.length === 0 ? (
         <Card>
