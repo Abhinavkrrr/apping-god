@@ -7,7 +7,7 @@ import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 import { rewriteCompanyBrief } from "@/lib/send/llm";
 
 const FUNCTION_URL = `https://${process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0]}.functions.supabase.co/send-worker`;
-const MASTER_CAMPAIGN_NAME = "VC"; // designated as the default for all contacts
+const MASTER_CAMPAIGN_NAME = "Outreach"; // single master campaign for all contacts
 
 interface CompanyRow {
   id: string; name: string; domain: string | null;

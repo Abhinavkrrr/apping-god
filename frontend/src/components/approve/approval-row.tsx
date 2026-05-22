@@ -4,7 +4,6 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { X, Eye, Send } from "lucide-react";
 import { toast } from "sonner";
 import { rejectSend, dispatchNow } from "@/app/actions/approvals";
@@ -57,9 +56,7 @@ export function ApprovalRow({ draft, checked, onCheck }: {
             {draft.contact_name}{" "}
             <span className="text-slate-400 font-normal">&lt;{draft.contact_email}&gt;</span>
           </div>
-          <div className="text-xs text-slate-500">
-            {draft.company_name}{" "}<Badge variant="info">{draft.campaign_name}</Badge>
-          </div>
+          <div className="text-xs text-slate-500">{draft.company_name}</div>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
           <Eye className="h-3.5 w-3.5 mr-1" /> {expanded ? "Hide" : "Preview"}

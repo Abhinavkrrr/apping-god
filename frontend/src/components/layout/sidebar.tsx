@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
-  Megaphone,
   Users,
   FileText,
   FileUser,
@@ -18,11 +17,10 @@ import { cn } from "@/lib/utils/cn";
 
 const nav = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/templates", label: "Templates", icon: FileText },
   { href: "/resumes", label: "Resumes", icon: FileUser },
-  { href: "/approve", label: "Approve", icon: CheckSquare },
+  { href: "/approve", label: "Approve & Send", icon: CheckSquare },
   { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
