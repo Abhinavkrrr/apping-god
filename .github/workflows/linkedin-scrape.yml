@@ -1,0 +1,61 @@
+name: LinkedIn scrape (scaffold — disabled by default)
+
+# IMPORTANT: LinkedIn scraping violates LinkedIn's Terms of Service.
+# This workflow is provided as a scaffold only. The author of this
+# system is not responsible for any account suspensions, bans, or
+# other consequences from running it.
+#
+# To enable:
+#   1. Add LINKEDIN_LI_AT secret (your secondary account's li_at cookie)
+#   2. Uncomment the `schedule` block below
+#   3. Confirm understanding of LinkedIn ToS
+
+on:
+  # schedule:
+  #   - cron: "0 3 * * *"   # 3:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      search_url:
+        description: "LinkedIn search URL (people search, public profile filter)"
+        required: true
+        type: string
+      max_pages:
+        description: "Max pages to scrape (default 3)"
+        default: "3"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ vars.LINKEDIN_SCRAPE_ENABLED == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: Install Playwright + stealth
+        run: |
+          npm init -y
+          npm install playwright playwright-extra puppeteer-extra-plugin-stealth
+          npx playwright install chromium
+
+      - name: Run scraper
+        env:
+          LI_AT: ${{ secrets.LINKEDIN_LI_AT }}
+          SEARCH_URL: ${{ inputs.search_url }}
+          MAX_PAGES: ${{ inputs.max_pages }}
+        run: |
+          cat > scrape.js <<'EOF'
+          // Scaffold script - completes Phase 5+
+          // Real implementation: navigate to search URL, harvest visible
+          // name/title/company/profile_url, push to Supabase via REST.
+          console.log("LinkedIn scrape scaffold — full implementation in next session.");
+          console.log("Search:", process.env.SEARCH_URL);
+          console.log("Pages:", process.env.MAX_PAGES);
+          EOF
+          node scrape.js
+
+      - name: Note
+        run: echo "Scaffold workflow ran successfully. Real scraper implementation pending."

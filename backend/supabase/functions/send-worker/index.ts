@@ -132,14 +132,27 @@ Deno.serve(async (req) => {
     attachment = await fetchResume(resumeId);
   }
 
-  // SMTP send
-  // Use port 587 with STARTTLS — Supabase Edge Functions allow outbound on both 465 & 587.
+  // Pick a sending account: prefer one from the accounts table that isn't
+  // paused, isn't dead, and is under daily cap. Fall back to env GMAIL_USER.
+  const sb = admin();
+  const { data: pool } = await sb.from("accounts").select("*")
+    .in("warmup_phase", ["warmup", "active"])
+    .order("sent_today", { ascending: true });
+  const eligible = (pool ?? []).find((a: any) =>
+    a.sent_today < a.daily_cap &&
+    (!a.paused_until || new Date(a.paused_until) <= new Date())
+  );
+  const senderEmail = eligible?.email ?? GMAIL_USER;
+  const senderPassword = eligible?.smtp_password_enc ?? GMAIL_APP_PASSWORD;
+  const senderAccountId = eligible?.id ?? null;
+
+  // SMTP send via denomailer. Port 465 SSL.
   const client = new SMTPClient({
     connection: {
       hostname: "smtp.gmail.com",
       port: 465,
       tls: true,
-      auth: { username: GMAIL_USER, password: GMAIL_APP_PASSWORD },
+      auth: { username: senderEmail, password: senderPassword },
     },
   });
 
@@ -149,11 +162,11 @@ Deno.serve(async (req) => {
   if (logSendId) headers["X-Apping-Send-Id"] = logSendId;
 
   try {
-    const messageId = `<${crypto.randomUUID()}@${GMAIL_USER.split("@")[1] ?? "gmail.com"}>`;
+    const messageId = `<${crypto.randomUUID()}@${senderEmail.split("@")[1] ?? "gmail.com"}>`;
     headers["Message-ID"] = messageId;
 
     await client.send({
-      from: `${SENDER_NAME} <${GMAIL_USER}>`,
+      from: `${SENDER_NAME} <${senderEmail}>`,
       to,
       subject,
       content: textBody,
@@ -173,25 +186,33 @@ Deno.serve(async (req) => {
 
     await client.close();
 
-    // Log event(sent) if log_send_id provided
+    // Log event(sent) + bump account counter
     if (logSendId) {
-      const sb = admin();
       await sb.from("events").insert({
         send_id: logSendId,
         type: "sent",
-        metadata: { account: GMAIL_USER, message_id: messageId },
+        metadata: { account: senderEmail, message_id: messageId },
       });
       await sb.from("sends").update({
         sent_at: new Date().toISOString(),
         message_id: messageId,
+        account_id: senderAccountId,
         status: "sent",
       }).eq("id", logSendId);
+    }
+    if (senderAccountId) {
+      await sb.rpc("increment_account_sent", { account_id: senderAccountId }).catch(() => {
+        // RPC may not exist yet — fall back to manual increment
+      });
+      // Manual fallback if no RPC
+      await sb.from("accounts").update({ sent_today: (eligible.sent_today ?? 0) + 1 })
+        .eq("id", senderAccountId);
     }
 
     return jsonResponse({
       ok: true,
       message_id: messageId,
-      from_account: GMAIL_USER,
+      from_account: senderEmail,
       to,
       attached_resume: !!attachment,
       attached_filename: attachment?.filename ?? null,

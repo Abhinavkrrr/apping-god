@@ -1,8 +1,9 @@
-import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Upload, Users } from "lucide-react";
+import { Users } from "lucide-react";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { AddContactModal } from "@/components/contacts/add-contact-modal";
+import { CsvUploadModal } from "@/components/contacts/csv-upload-modal";
+import { ContactActions } from "@/components/contacts/contact-actions";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -14,19 +15,18 @@ interface ContactRow {
   email: string;
   email_status: string;
   title: string | null;
-  role_type: string | null;
   source: string | null;
   unsubscribed_at: string | null;
-  companies: { name: string; brief_one_line: string | null } | null;
+  companies: { name: string } | null;
 }
 
 async function loadContacts() {
   const sb = createAdminClient();
   const [{ data, count }, { count: companyCount }] = await Promise.all([
     sb.from("contacts")
-      .select("id, first_name, last_name, email, email_status, title, role_type, source, unsubscribed_at, companies(name, brief_one_line)", { count: "exact" })
+      .select("id, first_name, last_name, email, email_status, title, source, unsubscribed_at, companies(name)", { count: "exact" })
       .order("created_at", { ascending: false })
-      .limit(100),
+      .limit(200),
     sb.from("companies").select("id", { count: "exact", head: true }),
   ]);
   return { contacts: (data as unknown as ContactRow[]) || [], total: count ?? 0, companyCount: companyCount ?? 0 };
@@ -60,21 +60,20 @@ export default async function ContactsPage() {
             <span className="font-semibold text-slate-700">{companyCount.toLocaleString()}</span> companies.
           </p>
         </div>
-        <Link href="/contacts/import">
-          <Button>
-            <Upload className="mr-2 h-4 w-4" /> Import CSV
-          </Button>
-        </Link>
+        <div className="flex gap-2">
+          <AddContactModal />
+          <CsvUploadModal />
+        </div>
       </div>
 
       <Card>
         <CardHeader className="border-b border-slate-100">
           <div className="flex items-center gap-2">
             <Users className="h-5 w-5 text-slate-400" />
-            <CardTitle className="text-base">Recent contacts (first 100)</CardTitle>
+            <CardTitle className="text-base">Recent contacts (first 200)</CardTitle>
           </div>
           <CardDescription>
-            Sorted newest first. Full search + filters land in Phase 3.
+            Sorted newest first. Click the trash icon to delete (also deletes existing sends).
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
@@ -87,6 +86,7 @@ export default async function ContactsPage() {
                   <th className="px-4 py-3 text-left font-medium">Company</th>
                   <th className="px-4 py-3 text-left font-medium">Status</th>
                   <th className="px-4 py-3 text-left font-medium">Source</th>
+                  <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -99,18 +99,17 @@ export default async function ContactsPage() {
                     <td className="px-4 py-2.5 text-slate-700">
                       {c.companies?.name ?? <span className="text-slate-400">—</span>}
                     </td>
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={c.email_status} />
-                    </td>
+                    <td className="px-4 py-2.5"><StatusBadge status={c.email_status} /></td>
                     <td className="px-4 py-2.5 text-slate-500 text-xs">{c.source ?? "—"}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      <ContactActions contactId={c.id} email={c.email} />
+                    </td>
                   </tr>
                 ))}
                 {contacts.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500">
-                      No contacts yet. Run the seed CSV importer or upload a file.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-500">
+                    No contacts yet. Add one or import a CSV above.
+                  </td></tr>
                 )}
               </tbody>
             </table>
