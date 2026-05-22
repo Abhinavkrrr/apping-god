@@ -2,11 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
-import { Send, Moon, Loader2 } from "lucide-react";
+import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { sendAllPendingNow, schedulePendingForTomorrow } from "@/app/actions/send";
+import { sendAllPendingNow } from "@/app/actions/send";
 import { GenerateModal } from "./generate-modal";
 import { QuickAddModal } from "./quick-add-modal";
+import { ScheduleDialog } from "./schedule-dialog";
 
 interface MasterTemplate {
   template_id: string;
@@ -20,7 +21,7 @@ export function DispatchBar({
   pendingCount,
   master,
 }: { pendingCount: number; master: MasterTemplate | null }) {
-  const [busy, setBusy] = useState<"send" | "schedule" | null>(null);
+  const [busy, setBusy] = useState<"send" | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function handleSendNow() {
@@ -33,18 +34,6 @@ export function DispatchBar({
       setBusy(null);
       if (r.ok) toast.success(`✓ Sent: ${r.sent} · Failed: ${r.failed} · Skipped: ${r.skipped}`);
       else toast.error(r.error ?? "Send failed.");
-    });
-  }
-
-  function handleSchedule() {
-    if (pendingCount === 0) { toast.error("No pending drafts."); return; }
-    if (!confirm(`Schedule ${pendingCount} email(s) to send tomorrow at 10:30 AM IST?`)) return;
-    setBusy("schedule");
-    startTransition(async () => {
-      const r = await schedulePendingForTomorrow({ hour: 10, minute: 30 });
-      setBusy(null);
-      if (r.ok) toast.success(`✓ Scheduled ${r.scheduled} for ${r.scheduled_at_local}`);
-      else toast.error(r.error ?? "Schedule failed.");
     });
   }
 
@@ -77,14 +66,11 @@ export function DispatchBar({
             : <><Send className="h-4 w-4 mr-2" /> Send NOW ({pendingCount})</>}
         </Button>
 
-        <Button
-          size="sm" onClick={handleSchedule} disabled={disabled || pendingCount === 0}
-          className="bg-violet-500 hover:bg-violet-400 text-white border-0"
-        >
-          {busy === "schedule"
-            ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Scheduling…</>
-            : <><Moon className="h-4 w-4 mr-2" /> Schedule for 10:30 AM tomorrow</>}
-        </Button>
+        <ScheduleDialog
+          triggerLabel={`Schedule (${pendingCount})`}
+          pendingCount={pendingCount}
+          disabled={disabled}
+        />
       </div>
     </div>
   );

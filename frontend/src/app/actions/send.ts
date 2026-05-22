@@ -302,32 +302,44 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
 }
 
 // ============================================================
-// SCHEDULE ALL pending for tomorrow 10:30 IST
+// SCHEDULE all pending for a custom date+time (UTC ISO)
+// If no time given, defaults to tomorrow 10:30 AM IST.
 // ============================================================
-export async function schedulePendingForTomorrow(opts?: { hour?: number; minute?: number }) {
+export interface ScheduleOpts {
+  scheduledAtIso?: string;  // explicit UTC ISO (takes precedence)
+  hour?: number;            // legacy: hour in IST
+  minute?: number;          // legacy: minute in IST
+}
+
+export async function schedulePendingForTomorrow(opts?: ScheduleOpts) {
   return schedulePendingByIds(undefined, opts);
 }
 
-// ============================================================
-// SCHEDULE a specific set of pending drafts for tomorrow
-// ============================================================
-export async function scheduleSelectedForTomorrow(sendIds: string[], opts?: { hour?: number; minute?: number }) {
+export async function scheduleSelectedForTomorrow(sendIds: string[], opts?: ScheduleOpts) {
   if (!sendIds || sendIds.length === 0) {
     return { ok: false, error: "No drafts selected." };
   }
   return schedulePendingByIds(sendIds, opts);
 }
 
-async function schedulePendingByIds(sendIds: string[] | undefined, opts?: { hour?: number; minute?: number }) {
-  const sb = createAdminClient();
+function resolveScheduledAt(opts?: ScheduleOpts): Date {
+  if (opts?.scheduledAtIso) {
+    const d = new Date(opts.scheduledAtIso);
+    if (!isNaN(d.getTime()) && d.getTime() > Date.now()) return d;
+  }
+  // Legacy/default: tomorrow at hour:minute IST (IST = UTC+5:30)
   const hour = opts?.hour ?? 10;
   const minute = opts?.minute ?? 30;
-
   const now = new Date();
-  const tomorrow = new Date(Date.UTC(
+  return new Date(Date.UTC(
     now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1,
     hour - 5, minute - 30, 0
   ));
+}
+
+async function schedulePendingByIds(sendIds: string[] | undefined, opts?: ScheduleOpts) {
+  const sb = createAdminClient();
+  const scheduledAt = resolveScheduledAt(opts);
 
   let q = sb.from("sends").select("id").eq("status", "pending_approval");
   if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
@@ -338,7 +350,7 @@ async function schedulePendingByIds(sendIds: string[] | undefined, opts?: { hour
   const ids = pending.map((s: any) => s.id);
 
   await sb.from("sends").update({
-    status: "approved", scheduled_at: tomorrow.toISOString(),
+    status: "approved", scheduled_at: scheduledAt.toISOString(),
   }).in("id", ids);
   await sb.from("approvals").update({
     status: "approved", reviewed_at: new Date().toISOString(),
@@ -346,9 +358,16 @@ async function schedulePendingByIds(sendIds: string[] | undefined, opts?: { hour
 
   revalidatePath("/approve");
   revalidatePath("/");
+
+  // Render scheduled time in IST for the toast
+  const localStr = scheduledAt.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short", day: "numeric", month: "short",
+    hour: "2-digit", minute: "2-digit", hour12: true,
+  });
   return {
     ok: true, scheduled: ids.length,
-    scheduled_at_utc: tomorrow.toISOString(),
-    scheduled_at_local: `${hour}:${String(minute).padStart(2, "0")} IST tomorrow`,
+    scheduled_at_utc: scheduledAt.toISOString(),
+    scheduled_at_local: `${localStr} IST`,
   };
 }
