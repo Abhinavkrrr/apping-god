@@ -19,7 +19,7 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const skipLlm = args.includes("--skip-llm");
 const campaignIdx = args.indexOf("--campaign");
-const campaignName = campaignIdx >= 0 ? args[campaignIdx + 1] : "VC";
+const campaignName = campaignIdx >= 0 ? args[campaignIdx + 1] : "Outreach";
 const recipient = args.find(a => a.includes("@")) || process.env.SENDER_EMAIL;
 
 const FUNCTION_URL = `https://${process.env.SUPABASE_PROJECT_REF}.functions.supabase.co/send-worker`;

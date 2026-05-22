@@ -133,12 +133,18 @@ Deno.serve(async (req) => {
   }
 
   // Pick a sending account: prefer one from the accounts table that isn't
-  // paused, isn't dead, and is under daily cap. Fall back to env GMAIL_USER.
+  // paused, isn't dead, is under daily cap, and has a REAL password (not
+  // a placeholder like "ENV"). Fall back to env GMAIL_USER otherwise.
   const sb = admin();
   const { data: pool } = await sb.from("accounts").select("*")
     .in("warmup_phase", ["warmup", "active"])
     .order("sent_today", { ascending: true });
+
+  const isRealPassword = (p: string | null | undefined) =>
+    !!p && p !== "ENV" && p.length >= 8;
+
   const eligible = (pool ?? []).find((a: any) =>
+    isRealPassword(a.smtp_password_enc) &&
     a.sent_today < a.daily_cap &&
     (!a.paused_until || new Date(a.paused_until) <= new Date())
   );
@@ -200,13 +206,11 @@ Deno.serve(async (req) => {
         status: "sent",
       }).eq("id", logSendId);
     }
-    if (senderAccountId) {
-      await sb.rpc("increment_account_sent", { account_id: senderAccountId }).catch(() => {
-        // RPC may not exist yet — fall back to manual increment
-      });
-      // Manual fallback if no RPC
-      await sb.from("accounts").update({ sent_today: (eligible.sent_today ?? 0) + 1 })
-        .eq("id", senderAccountId);
+    if (senderAccountId && eligible) {
+      // Bump the account's daily counter
+      await sb.from("accounts").update({
+        sent_today: (eligible.sent_today ?? 0) + 1,
+      }).eq("id", senderAccountId);
     }
 
     return jsonResponse({

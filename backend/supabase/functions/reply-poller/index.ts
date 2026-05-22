@@ -60,17 +60,23 @@ Deno.serve(async () => {
   const sb = admin();
 
   // Track last-seen UID per inbox (stored in accounts.imap_last_uid).
-  // For v1 single-account: use GMAIL_USER as the key, store in accounts table if exists.
+  // For v1 single-account: use GMAIL_USER as the key. Create the row with
+  // the REAL password (not a placeholder) so send-worker can use it too.
   let { data: account } = await sb.from("accounts").select("*").eq("email", GMAIL_USER).maybeSingle();
   if (!account) {
-    // Create on-the-fly virtual account row to track UID cursor
     const ins = await sb.from("accounts").insert({
       email: GMAIL_USER,
-      smtp_password_enc: "ENV", // placeholder
-      imap_password_enc: "ENV",
+      smtp_password_enc: GMAIL_APP_PASSWORD,
+      imap_password_enc: GMAIL_APP_PASSWORD,
       warmup_phase: "active",
     }).select().single();
     account = ins.data;
+  } else if (account.smtp_password_enc === "ENV" || !account.smtp_password_enc) {
+    // Heal an older row that was created with a placeholder.
+    await sb.from("accounts").update({
+      smtp_password_enc: GMAIL_APP_PASSWORD,
+      imap_password_enc: GMAIL_APP_PASSWORD,
+    }).eq("id", account.id);
   }
   const lastUid = account?.imap_last_uid ?? 0;
 
