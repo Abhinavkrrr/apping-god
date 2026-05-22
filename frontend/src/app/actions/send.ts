@@ -163,15 +163,31 @@ export async function generateDrafts(opts: {
 // SEND ALL pending NOW
 // ============================================================
 export async function sendAllPendingNow() {
+  return sendPendingByIds(undefined);
+}
+
+// ============================================================
+// SEND a specific set of pending drafts (selected in dashboard)
+// ============================================================
+export async function sendSelectedPending(sendIds: string[]) {
+  if (!sendIds || sendIds.length === 0) {
+    return { ok: false, error: "No drafts selected." };
+  }
+  return sendPendingByIds(sendIds);
+}
+
+async function sendPendingByIds(sendIds: string[] | undefined) {
   const sb = createAdminClient();
 
-  const { data: pending } = await sb.from("sends").select(`
+  let q = sb.from("sends").select(`
     id, resume_id, rendered_subject, rendered_body,
     contacts(email, unsubscribed_at)
   `).eq("status", "pending_approval");
+  if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
 
+  const { data: pending } = await q;
   if (!pending || pending.length === 0) {
-    return { ok: false, error: "No pending drafts." };
+    return { ok: false, error: "No pending drafts to send." };
   }
 
   let sent = 0, failed = 0, skipped = 0;
