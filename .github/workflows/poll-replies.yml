@@ -1,0 +1,49 @@
+name: Poll replies (every 15 min)
+
+# Runs scripts/poll_replies.js on a schedule. This replaces the Supabase
+# Edge Function reply-poller which fails with WORKER_RESOURCE_LIMIT —
+# the imapflow + Groq workload is too heavy for the free Edge runtime.
+#
+# GitHub Actions free tier: 2000 min/month. This uses ~50 min/day = 1500/month.
+#
+# Required secrets (already in the morning-dispatch workflow's setup):
+#   GMAIL_USER, GMAIL_APP_PASSWORD, SUPABASE_URL,
+#   SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY, SUPABASE_DB_PASSWORD
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"     # every 15 min
+  workflow_dispatch: {}         # also manual trigger from Actions tab
+
+concurrency:
+  group: poll-replies
+  cancel-in-progress: false     # don't kill an in-flight run
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: Install script deps
+        working-directory: scripts
+        run: npm install
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env <<EOF
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
+          GMAIL_USER=${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          EOF
+
+      - name: Poll IMAP for new replies
+        run: node scripts/poll_replies.js
