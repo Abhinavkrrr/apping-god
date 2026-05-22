@@ -5,9 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Check, X, Eye, Send } from "lucide-react";
+import { X, Eye, Send } from "lucide-react";
 import { toast } from "sonner";
-import { approveSend, rejectSend, dispatchNow } from "@/app/actions/approvals";
+import { rejectSend, dispatchNow } from "@/app/actions/approvals";
 
 interface Draft {
   id: string;
@@ -27,28 +27,20 @@ export function ApprovalRow({ draft, checked, onCheck }: {
   const [body, setBody] = useState(draft.rendered_body);
   const [isPending, startTransition] = useTransition();
 
-  function approve() {
-    const edited = subject !== draft.rendered_subject || body !== draft.rendered_body;
-    startTransition(async () => {
-      const r = await approveSend(draft.id, edited ? subject : undefined, edited ? body : undefined);
-      if (r.ok) toast.success(`Approved → ${draft.contact_email}`);
-      else toast.error("Approve failed");
-    });
-  }
-
   function reject() {
+    if (!confirm(`Reject draft to ${draft.contact_email}? It won't be sent.`)) return;
     startTransition(async () => {
       const r = await rejectSend(draft.id);
-      if (r.ok) toast.success("Rejected");
+      if (r.ok) toast.success(`Rejected ${draft.contact_email}`);
       else toast.error("Reject failed");
     });
   }
 
-  function sendNow() {
+  function send() {
     startTransition(async () => {
       const r = await dispatchNow(draft.id);
-      if (r.ok) toast.success(`Sent to ${draft.contact_email}`);
-      else toast.error(`Send failed: ${JSON.stringify(r.result).slice(0, 80)}`);
+      if (r.ok) toast.success(`✓ Sent to ${draft.contact_email}`);
+      else toast.error(`Failed: ${JSON.stringify(r.result).slice(0, 80)}`);
     });
   }
 
@@ -61,20 +53,22 @@ export function ApprovalRow({ draft, checked, onCheck }: {
           className="h-4 w-4 rounded border-slate-300"
         />
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm">{draft.contact_name} <span className="text-slate-400 font-normal">&lt;{draft.contact_email}&gt;</span></div>
-          <div className="text-xs text-slate-500">{draft.company_name} · <Badge variant="info">{draft.campaign_name}</Badge></div>
+          <div className="font-medium text-sm">
+            {draft.contact_name}{" "}
+            <span className="text-slate-400 font-normal">&lt;{draft.contact_email}&gt;</span>
+          </div>
+          <div className="text-xs text-slate-500">
+            {draft.company_name}{" "}<Badge variant="info">{draft.campaign_name}</Badge>
+          </div>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
           <Eye className="h-3.5 w-3.5 mr-1" /> {expanded ? "Hide" : "Preview"}
         </Button>
-        <Button variant="ghost" size="sm" onClick={reject} disabled={isPending}>
+        <Button variant="ghost" size="sm" onClick={reject} disabled={isPending} title="Reject">
           <X className="h-3.5 w-3.5 text-red-600" />
         </Button>
-        <Button size="sm" onClick={approve} disabled={isPending}>
-          <Check className="h-3.5 w-3.5 mr-1" /> Approve
-        </Button>
-        <Button size="sm" variant="outline" onClick={sendNow} disabled={isPending}>
-          <Send className="h-3.5 w-3.5 mr-1" /> Send now
+        <Button size="sm" onClick={send} disabled={isPending}>
+          <Send className="h-3.5 w-3.5 mr-1" /> Send
         </Button>
       </div>
       {expanded && (
@@ -84,7 +78,7 @@ export function ApprovalRow({ draft, checked, onCheck }: {
             <Input value={subject} onChange={(e) => setSubject(e.target.value)} className="bg-white" />
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Body (HTML — edit raw)</div>
+            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Body (HTML)</div>
             <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} className="bg-white text-[11px]" />
           </div>
           <div

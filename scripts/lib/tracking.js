@@ -43,21 +43,15 @@ function plainToTrackedHtml(plainBody, sendId) {
     ? `<br><br><img src="${LOGO_URL}" alt="IIT Bombay" width="110" height="110" style="display:block;border:0;margin-top:8px" />`
     : "";
 
-  const footer = `<br><br>
-<p style="font-size:11px;color:#9ca3af;line-height:1.4;margin-top:18px;border-top:1px solid #e5e7eb;padding-top:10px">
-${SENDER_ADDR}<br>
-<a href="${unsubUrl(sendId)}" style="color:#9ca3af;text-decoration:underline">Unsubscribe</a>
-</p>`;
-
+  // No unsubscribe footer (per user preference - personal outreach feel).
   const pixel = `<img src="${pixelUrl(sendId)}" width="1" height="1" alt="" style="display:block;border:0" />`;
 
-  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${footer}${pixel}</div>`;
+  return `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827">${withBreaks}${logoBlock}${pixel}</div>`;
 }
 
-/** Plain-text version with unsubscribe footer. Strips **bold** markers so text reads naturally. */
-function plainWithFooter(plainBody, sendId) {
-  const stripped = plainBody.replace(/\*\*([^*\n]+?)\*\*/g, '$1');
-  return `${stripped}\n\n---\n${SENDER_ADDR}\nUnsubscribe: ${unsubUrl(sendId)}\n`;
+/** Plain-text version. Strips **bold** markers so text reads naturally. */
+function plainWithFooter(plainBody, _sendId) {
+  return plainBody.replace(/\*\*([^*\n]+?)\*\*/g, '$1');
 }
 
 module.exports = { pixelUrl, clickUrl, unsubUrl, plainToTrackedHtml, plainWithFooter };

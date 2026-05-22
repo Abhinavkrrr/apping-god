@@ -3,104 +3,175 @@
 import { revalidatePath } from "next/cache";
 import { randomUUID } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { render, buildContext, plainToTrackedHtml, plainWithFooter } from "@/lib/send/render";
+import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 import { rewriteCompanyBrief } from "@/lib/send/llm";
 
 const FUNCTION_URL = `https://${process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0]}.functions.supabase.co/send-worker`;
+const MASTER_CAMPAIGN_NAME = "VC"; // designated as the default for all contacts
 
-interface Company {
+interface CompanyRow {
   id: string; name: string; domain: string | null;
   industry: string | null; brief_one_line: string | null;
   recent_news: Record<string, unknown> | null;
 }
 
 // ============================================================
-// GENERATE drafts (pending_approval) for active campaigns
+// Get the master template (used for ALL contacts in the new flow)
+// ============================================================
+export async function getMasterTemplate() {
+  const sb = createAdminClient();
+  const { data: campaign } = await sb.from("campaigns").select("id, resume_id")
+    .eq("name", MASTER_CAMPAIGN_NAME).single();
+  if (!campaign) return null;
+
+  const { data: seq } = await sb.from("sequences").select("*, templates(*)")
+    .eq("campaign_id", campaign.id).eq("step_number", 0).single();
+  if (!seq) return null;
+  const tpl = (seq as any).templates;
+
+  // Count eligible contacts (not unsubscribed, not skipped, not already drafted in master campaign)
+  const { data: allContacts } = await sb.from("contacts")
+    .select("id").is("unsubscribed_at", null).is("skip_reason", null);
+  const totalContacts = allContacts?.length ?? 0;
+
+  const { data: touched } = await sb.from("sends").select("contact_id")
+    .eq("campaign_id", campaign.id)
+    .in("status", ["pending_approval", "approved", "sending", "sent"]);
+  const touchedSet = new Set((touched ?? []).map((t: any) => t.contact_id));
+  const eligible = (allContacts ?? []).filter(c => !touchedSet.has(c.id)).length;
+
+  return {
+    template_id: tpl.id,
+    campaign_id: campaign.id,
+    resume_id: campaign.resume_id,
+    subject_tmpl: tpl.subject_tmpl as string,
+    body_tmpl: tpl.body_tmpl as string,
+    total_contacts: totalContacts,
+    eligible_contacts: eligible,
+  };
+}
+
+// ============================================================
+// Save edits to master template
+// ============================================================
+export async function saveMasterTemplate(templateId: string, subject: string, body: string) {
+  const sb = createAdminClient();
+  const { error } = await sb.from("templates").update({
+    subject_tmpl: subject, body_tmpl: body,
+  }).eq("id", templateId);
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/approve");
+  revalidatePath("/templates");
+  return { ok: true };
+}
+
+// ============================================================
+// GENERATE drafts — uses master template for ALL eligible contacts
+// (campaign status is IGNORED — every contact is processed)
 // ============================================================
 export async function generateDrafts(opts: {
-  campaign?: string; // campaign name filter; if omitted, all active
-  limit?: number;    // max drafts to create
-  useLlm?: boolean;  // call Gemini for opener rewrite
+  overrideSubject?: string;
+  overrideBody?: string;
+  useLlm?: boolean;
+  startFresh?: boolean; // delete existing pending_approval drafts first
 }) {
   const sb = createAdminClient();
-  const limit = opts.limit ?? 50;
-  const useLlm = opts.useLlm ?? true;
+  const useLlm = opts.useLlm ?? false;
 
-  let cq = sb.from("campaigns").select("*").eq("status", "active");
-  if (opts.campaign) cq = cq.eq("name", opts.campaign);
-  const { data: campaigns } = await cq;
-  if (!campaigns || campaigns.length === 0) {
-    return { ok: false, error: "No active campaigns. Set at least one campaign to 'active' first." };
+  // Get master campaign + template
+  const { data: campaign } = await sb.from("campaigns").select("*")
+    .eq("name", MASTER_CAMPAIGN_NAME).single();
+  if (!campaign) return { ok: false, error: `Master campaign "${MASTER_CAMPAIGN_NAME}" not found.` };
+
+  const { data: seq } = await sb.from("sequences").select("*, templates(*)")
+    .eq("campaign_id", campaign.id).eq("step_number", 0).single();
+  if (!seq?.templates) return { ok: false, error: "No first-touch template for master campaign." };
+  const template = (seq as any).templates;
+
+  // Save edits to template if provided
+  if (opts.overrideSubject || opts.overrideBody) {
+    await sb.from("templates").update({
+      subject_tmpl: opts.overrideSubject ?? template.subject_tmpl,
+      body_tmpl: opts.overrideBody ?? template.body_tmpl,
+    }).eq("id", template.id);
+    template.subject_tmpl = opts.overrideSubject ?? template.subject_tmpl;
+    template.body_tmpl = opts.overrideBody ?? template.body_tmpl;
   }
 
-  let created = 0;
-  for (const campaign of campaigns) {
-    if (created >= limit) break;
-
-    const { data: seq } = await sb.from("sequences").select("*, templates(*)")
-      .eq("campaign_id", campaign.id).eq("step_number", 0).maybeSingle();
-    if (!seq?.templates) continue;
-    const template = (seq as any).templates;
-
-    const { data: tagged } = await sb.from("contacts").select("*, companies(*)")
-      .contains("custom_fields", { campaign_tag: campaign.name })
-      .is("unsubscribed_at", null).is("skip_reason", null);
-
-    if (!tagged || tagged.length === 0) continue;
-
-    const { data: existing } = await sb.from("sends").select("contact_id")
-      .eq("campaign_id", campaign.id).in("status", ["pending_approval", "approved", "sending", "sent"]);
-    const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
-    const pool = tagged.filter((c: any) => !touched.has(c.id));
-
-    for (const contact of pool) {
-      if (created >= limit) break;
-      const company = (contact as any).companies as Company | null;
-      let opener = company?.brief_one_line ?? "";
-      if (useLlm && company?.id) opener = await rewriteCompanyBrief(company);
-
-      const sendId = randomUUID();
-      const ctx = buildContext(contact as any, company, { company_brief_one_line: opener });
-      const subject = render(template.subject_tmpl, ctx);
-      const text = render(template.body_tmpl, ctx);
-      const html = plainToTrackedHtml(text, sendId);
-
-      const { error } = await sb.from("sends").insert({
-        id: sendId,
-        contact_id: (contact as any).id,
-        campaign_id: campaign.id,
-        sequence_step: 0,
-        template_id: template.id,
-        resume_id: campaign.resume_id,
-        rendered_subject: subject,
-        rendered_body: html,
-        status: "pending_approval",
-      });
-      if (error) continue;
-      await sb.from("approvals").insert({ send_id: sendId, status: "pending" });
-      created++;
+  // Optionally clear existing drafts
+  if (opts.startFresh) {
+    const { data: oldDrafts } = await sb.from("sends").select("id")
+      .eq("campaign_id", campaign.id).eq("status", "pending_approval");
+    const ids = (oldDrafts ?? []).map((d: any) => d.id);
+    if (ids.length > 0) {
+      await sb.from("approvals").delete().in("send_id", ids);
+      await sb.from("sends").delete().in("id", ids);
     }
+  }
+
+  // ALL contacts (not just campaign-tagged) — this is the key change
+  const { data: contacts } = await sb.from("contacts")
+    .select("*, companies(*)").is("unsubscribed_at", null).is("skip_reason", null);
+
+  if (!contacts || contacts.length === 0) {
+    return { ok: false, error: "No eligible contacts." };
+  }
+
+  // Dedupe vs existing
+  const { data: existing } = await sb.from("sends").select("contact_id")
+    .eq("campaign_id", campaign.id)
+    .in("status", ["pending_approval", "approved", "sending", "sent"]);
+  const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
+  const pool = (contacts as any[]).filter(c => !touched.has(c.id));
+
+  let created = 0, failed = 0;
+  for (const contact of pool) {
+    const company = (contact as any).companies as CompanyRow | null;
+    let opener = company?.brief_one_line ?? "";
+    if (useLlm && company?.id) {
+      try { opener = await rewriteCompanyBrief(company); } catch { /* fall back */ }
+    }
+
+    const sendId = randomUUID();
+    const ctx = buildContext(contact as any, company, { company_brief_one_line: opener });
+    const subject = render(template.subject_tmpl, ctx);
+    const text = render(template.body_tmpl, ctx);
+    const html = plainToTrackedHtml(text, sendId);
+
+    const { error } = await sb.from("sends").insert({
+      id: sendId,
+      contact_id: (contact as any).id,
+      campaign_id: campaign.id,
+      sequence_step: 0,
+      template_id: template.id,
+      resume_id: campaign.resume_id,
+      rendered_subject: subject,
+      rendered_body: html,
+      status: "pending_approval",
+    });
+    if (error) { failed++; continue; }
+    await sb.from("approvals").insert({ send_id: sendId, status: "pending" });
+    created++;
   }
 
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, created };
+  return { ok: true, created, failed, total_eligible: pool.length };
 }
 
 // ============================================================
-// SEND ALL pending NOW — approve + dispatch immediately
+// SEND ALL pending NOW
 // ============================================================
-export async function sendAllPendingNow(opts?: { limit?: number }) {
+export async function sendAllPendingNow() {
   const sb = createAdminClient();
-  const limit = opts?.limit ?? 25;
 
   const { data: pending } = await sb.from("sends").select(`
     id, resume_id, rendered_subject, rendered_body,
     contacts(email, unsubscribed_at)
-  `).eq("status", "pending_approval").limit(limit);
+  `).eq("status", "pending_approval");
 
   if (!pending || pending.length === 0) {
-    return { ok: false, error: "No pending drafts. Generate some first." };
+    return { ok: false, error: "No pending drafts." };
   }
 
   let sent = 0, failed = 0, skipped = 0;
@@ -108,16 +179,13 @@ export async function sendAllPendingNow(opts?: { limit?: number }) {
     const c = (send as any).contacts;
     if (!c?.email || c?.unsubscribed_at) { skipped++; continue; }
 
-    // Mark approved + scheduled now
     await sb.from("sends").update({
-      status: "approved",
-      scheduled_at: new Date().toISOString(),
+      status: "approved", scheduled_at: new Date().toISOString(),
     }).eq("id", send.id);
     await sb.from("approvals").update({
       status: "approved", reviewed_at: new Date().toISOString(),
     }).eq("send_id", send.id);
 
-    // Dispatch
     try {
       const res = await fetch(FUNCTION_URL, {
         method: "POST",
@@ -141,8 +209,7 @@ export async function sendAllPendingNow(opts?: { limit?: number }) {
         sent++;
       } else {
         await sb.from("sends").update({
-          status: "failed",
-          failure_reason: out.error ?? `HTTP ${res.status}`,
+          status: "failed", failure_reason: out.error ?? `HTTP ${res.status}`,
         }).eq("id", send.id);
         failed++;
       }
@@ -164,7 +231,6 @@ export async function schedulePendingForTomorrow(opts?: { hour?: number; minute?
   const hour = opts?.hour ?? 10;
   const minute = opts?.minute ?? 30;
 
-  // Tomorrow at hour:minute IST (IST = UTC+5:30)
   const now = new Date();
   const tomorrow = new Date(Date.UTC(
     now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1,
@@ -188,8 +254,7 @@ export async function schedulePendingForTomorrow(opts?: { hour?: number; minute?
   revalidatePath("/approve");
   revalidatePath("/");
   return {
-    ok: true,
-    scheduled: ids.length,
+    ok: true, scheduled: ids.length,
     scheduled_at_utc: tomorrow.toISOString(),
     scheduled_at_local: `${hour}:${String(minute).padStart(2, "0")} IST tomorrow`,
   };

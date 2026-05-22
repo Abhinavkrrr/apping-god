@@ -2,22 +2,21 @@
 
 import { useTransition } from "react";
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { bulkApprove } from "@/app/actions/approvals";
+import { rejectSend } from "@/app/actions/approvals";
 
 export function BulkBar({ selected, onClear }: { selected: string[]; onClear: () => void }) {
   const [isPending, startTransition] = useTransition();
 
   if (selected.length === 0) return null;
 
-  function approve() {
+  function rejectAll() {
+    if (!confirm(`Reject ${selected.length} drafts? They will not be sent.`)) return;
     startTransition(async () => {
-      const r = await bulkApprove(selected);
-      if (r.ok) {
-        toast.success(`Approved ${r.count} drafts`);
-        onClear();
-      } else toast.error("Bulk approve failed");
+      for (const id of selected) await rejectSend(id);
+      toast.success(`Rejected ${selected.length} drafts`);
+      onClear();
     });
   }
 
@@ -26,8 +25,8 @@ export function BulkBar({ selected, onClear }: { selected: string[]; onClear: ()
       <div className="text-sm">{selected.length} selected</div>
       <div className="flex gap-2">
         <Button variant="ghost" size="sm" className="text-white hover:bg-slate-800" onClick={onClear}>Clear</Button>
-        <Button size="sm" onClick={approve} disabled={isPending} className="bg-white text-slate-900 hover:bg-slate-100">
-          <Check className="h-3.5 w-3.5 mr-1" /> Approve all selected
+        <Button size="sm" onClick={rejectAll} disabled={isPending} className="bg-red-600 hover:bg-red-700">
+          <Trash2 className="h-3.5 w-3.5 mr-1" /> Reject selected
         </Button>
       </div>
     </div>

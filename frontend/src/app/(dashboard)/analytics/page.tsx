@@ -23,8 +23,10 @@ async function loadAnalytics() {
     sb.from("events").select("id", { count: "exact", head: true }).eq("type", "open"),
     sb.from("events").select("id", { count: "exact", head: true }).eq("type", "click"),
     sb.from("events").select("id", { count: "exact", head: true }).eq("type", "reply"),
-    sb.from("events").select("type, timestamp, send_id")
-      .gte("timestamp", sevenDaysAgo).order("timestamp", { ascending: false }).limit(50),
+    sb.from("events").select(`
+      type, timestamp, send_id,
+      sends!inner(rendered_subject, contacts(first_name, last_name, email, companies(name)))
+    `).gte("timestamp", sevenDaysAgo).order("timestamp", { ascending: false }).limit(80),
     sb.from("replies").select("classification"),
   ]);
 
@@ -164,21 +166,32 @@ export default async function AnalyticsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Activity log (last 50 events, 7 days)</CardTitle>
+          <CardTitle>Activity log (last 80 events, 7 days)</CardTitle>
         </CardHeader>
         <CardContent>
           {recent.length === 0 ? (
             <p className="text-sm text-slate-500">No activity in the last 7 days.</p>
           ) : (
-            <div className="space-y-1 font-mono text-xs">
-              {recent.map((e: any, i: number) => (
-                <div key={i} className="flex gap-3 py-0.5">
-                  <span className="text-slate-500 w-40 shrink-0">{new Date(e.timestamp).toLocaleString()}</span>
-                  <span className="w-8 shrink-0 text-base">{EVENT_SYMBOL[e.type] ?? "•"}</span>
-                  <span className="w-20 shrink-0 uppercase tracking-wide text-slate-700">{e.type}</span>
-                  <span className="text-slate-500 truncate">{e.send_id}</span>
-                </div>
-              ))}
+            <div className="space-y-1.5 text-xs">
+              {recent.map((e: any, i: number) => {
+                const c = e.sends?.contacts;
+                const name = c
+                  ? [c.first_name, c.last_name].filter(Boolean).join(" ")
+                  : "—";
+                const email = c?.email ?? "";
+                const company = c?.companies?.name ?? "—";
+                return (
+                  <div key={i} className="flex items-center gap-3 py-1 border-b border-slate-50">
+                    <span className="text-slate-500 w-32 shrink-0">{new Date(e.timestamp).toLocaleString()}</span>
+                    <span className="w-7 shrink-0 text-base">{EVENT_SYMBOL[e.type] ?? "•"}</span>
+                    <span className="w-14 shrink-0 uppercase tracking-wide text-[10px] font-semibold text-slate-600">{e.type}</span>
+                    <span className="font-medium text-slate-900 shrink-0">{name}</span>
+                    <span className="text-slate-500 shrink-0">&lt;{email}&gt;</span>
+                    <span className="text-slate-400">at</span>
+                    <span className="text-slate-700">{company}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>
