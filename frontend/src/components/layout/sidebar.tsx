@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Users,
+  Search,
   FileText,
   FileUser,
   CheckSquare,
@@ -20,6 +21,7 @@ import { cn } from "@/lib/utils/cn";
 const nav = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/contacts", label: "Contacts", icon: Users },
+  { href: "/discover", label: "Discover", icon: Search },
   { href: "/templates", label: "Templates", icon: FileText },
   { href: "/resumes", label: "Resumes", icon: FileUser },
   { href: "/approve", label: "Approve & Send", icon: CheckSquare },
