@@ -58,7 +58,10 @@ export async function discoverViaApollo(input: DiscoverInput): Promise<DiscoverR
   const allPeople: DiscoveredPerson[] = [];
   const errors: string[] = [];
   let totalFromAllDomains = 0;
-  const perDomain = Math.min(input.per_page ?? 100, 100);
+  // Hunter free tier caps at 10 results per domain-search. Asking for more
+  // returns HTTP 400 'pagination_error'. We clamp here so the request always
+  // succeeds; paid plans support up to 100.
+  const perDomain = Math.min(input.per_page ?? 10, 10);
 
   for (const domain of input.domains) {
     try {

@@ -23,7 +23,7 @@ const TITLE_PRESETS = [
 export function DiscoverForm() {
   const [domainsText, setDomainsText] = useState("");
   const [titles, setTitles] = useState("");
-  const [perPage, setPerPage] = useState(100);
+  const [perPage, setPerPage] = useState(10);
   const [people, setPeople] = useState<DiscoveredPerson[] | null>(null);
   const [total, setTotal] = useState(0);
   const [isPending, startTransition] = useTransition();
@@ -59,9 +59,9 @@ export function DiscoverForm() {
           <CardTitle className="text-base">Search criteria</CardTitle>
           <CardDescription>
             Hunter.io scans the web for emails published at the domain you give it
-            (about pages, press releases, GitHub commits, etc.) and returns a list
-            of all employees with their names, titles, and emails. Free tier:{" "}
-            <strong>25 domain searches/month</strong>, up to 100 emails per search.
+            (about pages, press releases, GitHub commits, etc.) and returns
+            employees with names, titles, and emails. Free tier:{" "}
+            <strong>25 domain searches/month, up to 10 emails per search</strong>.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -97,8 +97,12 @@ export function DiscoverForm() {
 
           <div>
             <Label>Max results per domain</Label>
-            <Input type="number" min={10} max={100} value={perPage}
-              onChange={(e) => setPerPage(parseInt(e.target.value || "100"))} className="mt-1 w-32" />
+            <Input type="number" min={1} max={10} value={perPage}
+              onChange={(e) => setPerPage(Math.min(parseInt(e.target.value || "10"), 10))} className="mt-1 w-32" />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Hunter free tier caps at <strong>10 per search</strong>. Higher values return HTTP 400.
+              For more, add the company on the next search (each domain = 1 credit).
+            </p>
           </div>
 
           <Button onClick={search} disabled={isPending} className="w-full">
