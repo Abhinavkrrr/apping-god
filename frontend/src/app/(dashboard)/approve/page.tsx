@@ -12,7 +12,6 @@ export const revalidate = 0;
 interface DraftRow {
   id: string;
   rendered_subject: string | null;
-  rendered_body: string | null;
   campaigns: { name: string } | null;
   contacts: { email: string; first_name: string; last_name: string | null; companies: { name: string } | null } | null;
 }
@@ -21,8 +20,10 @@ async function loadData() {
   const sb = createAdminClient();
 
   const [{ data, count }, master, totalContactsRes, sendsByStatus] = await Promise.all([
+    // PERF: rendered_body intentionally omitted (~1-2KB/row × N). Lazy-loaded
+    // via loadDraftBody() on Preview click. Cuts initial payload massively.
     sb.from("sends").select(`
-      id, rendered_subject, rendered_body,
+      id, rendered_subject,
       campaigns(name),
       contacts(email, first_name, last_name, companies(name))
     `, { count: "exact" })
@@ -38,7 +39,7 @@ async function loadData() {
   const drafts = ((data ?? []) as unknown as DraftRow[]).map(d => ({
     id: d.id,
     rendered_subject: d.rendered_subject ?? "",
-    rendered_body: d.rendered_body ?? "",
+    rendered_body: "",  // lazy-loaded on Preview click
     contact_email: d.contacts?.email ?? "",
     contact_name: [d.contacts?.first_name, d.contacts?.last_name].filter(Boolean).join(" ") || "—",
     company_name: d.contacts?.companies?.name ?? "—",

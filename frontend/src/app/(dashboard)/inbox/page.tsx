@@ -13,11 +13,17 @@ const classBadgeVariant: Record<string, "success" | "warning" | "destructive" | 
 
 async function loadReplies() {
   const sb = createAdminClient();
+  // PERF: fetch 50 instead of 100, trim raw_body server-side so the wire
+  // payload stays small. The cleanReplyBody helper trims further client-side.
   const { data, count } = await sb.from("replies").select(`
     id, received_at, from_email, raw_body, classification, requires_action,
     sends(rendered_subject, contacts(first_name, email, companies(name)))
-  `, { count: "exact" }).order("received_at", { ascending: false }).limit(100);
-  return { replies: data ?? [], total: count ?? 0 };
+  `, { count: "exact" }).order("received_at", { ascending: false }).limit(50);
+  const truncated = (data ?? []).map((r: any) => ({
+    ...r,
+    raw_body: typeof r.raw_body === "string" ? r.raw_body.slice(0, 2500) : r.raw_body,
+  }));
+  return { replies: truncated, total: count ?? 0 };
 }
 
 export default async function InboxPage() {
