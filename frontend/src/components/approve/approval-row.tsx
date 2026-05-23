@@ -4,9 +4,10 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { X, Eye, Send } from "lucide-react";
+import { X, Eye, Send, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { rejectSend, dispatchNow } from "@/app/actions/approvals";
+import { personalizeSingleSend } from "@/app/actions/personalize";
 
 interface Draft {
   id: string;
@@ -35,6 +36,20 @@ export function ApprovalRow({ draft, checked, onCheck }: {
     });
   }
 
+  function personalize() {
+    startTransition(async () => {
+      toast.info(`Asking Gemini to personalize for ${draft.company_name}…`);
+      const r = await personalizeSingleSend(draft.id);
+      if (r.ok) {
+        toast.success(`✨ Rewritten — open Preview to see`);
+        // Force a hard reload of the row's body field from the new server state
+        // (the textarea above is local state and won't auto-update; user opens preview to see)
+      } else {
+        toast.error(r.error ?? "Personalization failed");
+      }
+    });
+  }
+
   function send() {
     startTransition(async () => {
       const r = await dispatchNow(draft.id);
@@ -60,6 +75,12 @@ export function ApprovalRow({ draft, checked, onCheck }: {
         </div>
         <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
           <Eye className="h-3.5 w-3.5 mr-1" /> {expanded ? "Hide" : "Preview"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={personalize} disabled={isPending}
+          title={`Rewrite this email specifically for ${draft.company_name}`}>
+          {isPending
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <><Sparkles className="h-3.5 w-3.5 mr-1 text-violet-600" /> AI</>}
         </Button>
         <Button variant="ghost" size="sm" onClick={reject} disabled={isPending} title="Reject">
           <X className="h-3.5 w-3.5 text-red-600" />

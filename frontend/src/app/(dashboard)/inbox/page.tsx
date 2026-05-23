@@ -1,6 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { cleanReplyBody } from "@/lib/utils/clean-reply";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -47,38 +48,56 @@ export default async function InboxPage() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {replies.map((r: any) => (
-            <Card key={r.id}>
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm">{r.from_email}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      To: {r.sends?.contacts?.email}{" "}
-                      <span className="text-slate-400">·</span>{" "}
-                      {r.sends?.contacts?.companies?.name}{" "}
-                      <span className="text-slate-400">·</span>{" "}
-                      {new Date(r.received_at).toLocaleString()}
+          {replies.map((r: any) => {
+            const cleanedBody = cleanReplyBody(r.raw_body ?? "");
+            return (
+              <Card key={r.id}>
+                <CardHeader className="pb-3 border-b border-slate-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-sm text-slate-900">
+                        {r.from_email}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        Reply to{" "}
+                        <span className="text-slate-700">{r.sends?.contacts?.email}</span>{" "}
+                        at <span className="text-slate-700">{r.sends?.contacts?.companies?.name ?? "—"}</span>
+                        <span className="text-slate-400 mx-1">·</span>
+                        {new Date(r.received_at).toLocaleString("en-IN", {
+                          timeZone: "Asia/Kolkata",
+                          weekday: "short", day: "numeric", month: "short",
+                          hour: "2-digit", minute: "2-digit", hour12: true,
+                        })}
+                      </div>
+                      <div className="text-sm text-slate-700 mt-2 font-medium">
+                        Re: {r.sends?.rendered_subject}
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-700 mt-1 font-medium line-clamp-1">
-                      Re: {r.sends?.rendered_subject}
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <Badge variant={classBadgeVariant[r.classification ?? "other"]}>
+                        {r.classification?.replace(/_/g, " ")}
+                      </Badge>
+                      {r.requires_action && <Badge variant="warning">Needs action</Badge>}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant={classBadgeVariant[r.classification ?? "other"]}>
-                      {r.classification}
-                    </Badge>
-                    {r.requires_action && <Badge variant="warning">action</Badge>}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-2">
-                <div className="text-xs text-slate-600 whitespace-pre-wrap line-clamp-6 bg-slate-50 rounded p-3">
-                  {r.raw_body?.slice(0, 600) || <em className="text-slate-400">No body extracted</em>}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </CardHeader>
+                <CardContent className="pt-3">
+                  {cleanedBody ? (
+                    <div className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed font-sans bg-white">
+                      {cleanedBody.slice(0, 1500)}
+                      {cleanedBody.length > 1500 && (
+                        <span className="text-xs text-slate-400 italic"> … ({cleanedBody.length - 1500} more chars)</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400 italic">
+                      (No readable body extracted — raw payload was empty or all noise)
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>
