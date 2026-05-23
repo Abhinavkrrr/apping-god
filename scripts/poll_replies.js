@@ -87,7 +87,22 @@ async function classify(body) {
     console.log("✓ Connected.");
     const lock = await client.getMailboxLock("INBOX");
     try {
-      const range = lastUid > 0 ? `${lastUid + 1}:*` : "1:*";
+      // First run (lastUid=0) without a cap would scan the ENTIRE inbox.
+      // Limit to last 14 days OR the most recent 200 messages (whichever
+      // is fewer) to avoid downloading thousands of irrelevant messages.
+      let range;
+      if (lastUid > 0) {
+        range = `${lastUid + 1}:*`;
+      } else {
+        const since = new Date(Date.now() - 14 * 86400_000);
+        const uids = await client.search({ since }, { uid: true });
+        if (!uids || uids.length === 0) {
+          console.log("No messages in last 14d.");
+          return;
+        }
+        const startUid = uids[Math.max(0, uids.length - 200)];
+        range = `${startUid}:*`;
+      }
       console.log(`Fetching UIDs ${range}...`);
 
       for await (const msg of client.fetch(range, {

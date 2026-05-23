@@ -11,8 +11,13 @@ export const revalidate = 0;
 
 async function loadOverview() {
   const sb = createAdminClient();
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
+  // "Today" = today in IST (UTC+5:30), not UTC midnight.
+  const nowUtc = new Date();
+  const istNow = new Date(nowUtc.getTime() + (5 * 60 + 30) * 60 * 1000);
+  const istMidnight = new Date(Date.UTC(
+    istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate(), 0, 0, 0
+  ));
+  const todayStart = new Date(istMidnight.getTime() - (5 * 60 + 30) * 60 * 1000);
 
   const [
     { count: contactCount },

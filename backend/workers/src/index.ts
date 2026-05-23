@@ -72,8 +72,21 @@ export default {
       const sendId = clickMatch[1];
       const target = url.searchParams.get("u");
       if (!target) return new Response("missing u param", { status: 400 });
+
+      // Security: reject anything that's not a plain http(s) URL to prevent
+      // the click endpoint from being used as an open redirect (phishing,
+      // javascript: schemes, data: URIs, mailto:, etc).
+      let parsed: URL;
+      try {
+        parsed = new URL(target);
+      } catch {
+        return new Response("invalid u param", { status: 400 });
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return new Response("only http(s) targets allowed", { status: 400 });
+      }
       ctx.waitUntil(logEvent(env, sendId, "click", { url: target }));
-      return Response.redirect(target, 302);
+      return Response.redirect(parsed.toString(), 302);
     }
 
     // --- Unsubscribe ---

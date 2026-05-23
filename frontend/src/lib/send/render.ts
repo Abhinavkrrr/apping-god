@@ -30,9 +30,14 @@ export function buildContext(
   };
 }
 
-function pixelUrl(sendId: string) { return `${TRACKING_BASE}/t/open/${sendId}.gif`; }
-function clickUrl(sendId: string, target: string) { return `${TRACKING_BASE}/t/click/${sendId}?u=${encodeURIComponent(target)}`; }
-function unsubUrl(sendId: string) { return `${TRACKING_BASE}/t/unsub/${sendId}`; }
+function ensureBase() {
+  if (!TRACKING_BASE) {
+    throw new Error("TRACKING_BASE_URL not set in env — tracking pixel + links would be broken. Set in .env.local.");
+  }
+}
+function pixelUrl(sendId: string) { ensureBase(); return `${TRACKING_BASE}/t/open/${sendId}.gif`; }
+function clickUrl(sendId: string, target: string) { ensureBase(); return `${TRACKING_BASE}/t/click/${sendId}?u=${encodeURIComponent(target)}`; }
+function unsubUrl(sendId: string) { ensureBase(); return `${TRACKING_BASE}/t/unsub/${sendId}`; }
 
 export function plainToTrackedHtml(plainBody: string, sendId: string): string {
   const escaped = plainBody

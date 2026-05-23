@@ -21,13 +21,14 @@ interface CompanyRow {
 export async function getMasterTemplate() {
   const sb = createAdminClient();
   const { data: campaign } = await sb.from("campaigns").select("id, resume_id")
-    .eq("name", MASTER_CAMPAIGN_NAME).single();
+    .eq("name", MASTER_CAMPAIGN_NAME).maybeSingle();
   if (!campaign) return null;
 
   const { data: seq } = await sb.from("sequences").select("*, templates(*)")
-    .eq("campaign_id", campaign.id).eq("step_number", 0).single();
+    .eq("campaign_id", campaign.id).eq("step_number", 0).maybeSingle();
   if (!seq) return null;
   const tpl = (seq as any).templates;
+  if (!tpl) return null;
 
   // Count eligible contacts (not unsubscribed, not skipped, not already drafted in master campaign)
   const { data: allContacts } = await sb.from("contacts")
@@ -294,9 +295,13 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
     const c = (send as any).contacts;
     if (!c?.email || c?.unsubscribed_at) { skipped++; continue; }
 
-    await sb.from("sends").update({
+    // ATOMIC CLAIM: only succeed if status is still 'pending_approval'.
+    // Prevents double-send when two clicks/runs race on the same row.
+    const { data: claimed } = await sb.from("sends").update({
       status: "approved", scheduled_at: new Date().toISOString(),
-    }).eq("id", send.id);
+    }).eq("id", send.id).eq("status", "pending_approval").select("id");
+    if (!claimed || claimed.length === 0) { skipped++; continue; }
+
     await sb.from("approvals").update({
       status: "approved", reviewed_at: new Date().toISOString(),
     }).eq("send_id", send.id);
@@ -362,9 +367,11 @@ export async function scheduleSelectedForTomorrow(sendIds: string[], opts?: Sche
 function resolveScheduledAt(opts?: ScheduleOpts): Date {
   if (opts?.scheduledAtIso) {
     const d = new Date(opts.scheduledAtIso);
-    if (!isNaN(d.getTime()) && d.getTime() > Date.now()) return d;
+    const now = Date.now();
+    const ninetyDays = 90 * 86400_000;
+    // Sanity bounds: must be in the future, within 90 days.
+    if (!isNaN(d.getTime()) && d.getTime() > now && d.getTime() - now < ninetyDays) return d;
   }
-  // Legacy/default: tomorrow at hour:minute IST (IST = UTC+5:30)
   const hour = opts?.hour ?? 10;
   const minute = opts?.minute ?? 30;
   const now = new Date();

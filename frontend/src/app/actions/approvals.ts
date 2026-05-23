@@ -38,6 +38,18 @@ export async function rejectSend(sendId: string) {
   return { ok: true };
 }
 
+/** Bulk reject — single DB round-trip instead of N sequential ones. */
+export async function rejectMany(sendIds: string[]) {
+  if (!sendIds || sendIds.length === 0) return { ok: false, error: "Nothing selected." };
+  const sb = createAdminClient();
+  await sb.from("sends").update({ status: "skipped" }).in("id", sendIds);
+  await sb.from("approvals").update({
+    status: "rejected", reviewed_at: new Date().toISOString(),
+  }).in("send_id", sendIds);
+  revalidatePath("/approve");
+  return { ok: true, count: sendIds.length };
+}
+
 export async function bulkApprove(sendIds: string[]) {
   const sb = createAdminClient();
   await sb.from("sends").update({

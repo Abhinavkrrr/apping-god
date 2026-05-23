@@ -23,6 +23,14 @@ export async function addContactAndQueue(input: {
 }) {
   const sb = createAdminClient();
 
+  // Reject if the email is already on the unsubscribe list — don't queue
+  // a draft to someone who explicitly opted out.
+  const lowerEmail = input.email.toLowerCase().trim();
+  const sbCheck = createAdminClient();
+  const { data: unsub } = await sbCheck.from("unsubscribes").select("email")
+    .eq("email", lowerEmail).maybeSingle();
+  if (unsub) return { ok: false, error: `${input.email} previously unsubscribed.` };
+
   // 1) Add contact (returns id)
   const addResult = await addContact({ ...input, source: "quick-add" });
   if (!addResult.ok) return { ok: false, error: addResult.error };

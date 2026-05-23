@@ -154,8 +154,18 @@ export async function deleteContact(contactId: string) {
 
 export async function markUnsubscribed(email: string) {
   const sb = createAdminClient();
-  await sb.from("unsubscribes").upsert({ email, reason: "manual" });
-  await sb.from("contacts").update({ unsubscribed_at: new Date().toISOString() }).eq("email", email);
+  const lower = email.toLowerCase().trim();
+  await sb.from("unsubscribes").upsert({ email: lower, reason: "manual" });
+  await sb.from("contacts").update({ unsubscribed_at: new Date().toISOString() }).eq("email", lower);
+  // Also skip any pending drafts to this address so we don't accidentally
+  // send after they've unsubscribed.
+  await sb.from("sends").update({ status: "skipped", failure_reason: "unsubscribed" })
+    .eq("status", "pending_approval")
+    .in("contact_id",
+      (await sb.from("contacts").select("id").eq("email", lower)).data?.map((c: any) => c.id) ?? []
+    );
   revalidatePath("/contacts");
+  revalidatePath("/approve");
+  revalidatePath("/");
   return { ok: true };
 }

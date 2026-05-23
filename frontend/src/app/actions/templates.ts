@@ -67,9 +67,32 @@ export async function createTemplate(input: {
   followup_step: number | null;
 }) {
   const sb = createAdminClient();
+  if (!input.subject_tmpl?.trim() || !input.body_tmpl?.trim()) {
+    return { ok: false, error: "Subject and body required." };
+  }
   const { data, error } = await sb.from("templates").insert(input).select().single();
   if (error) return { ok: false, error: error.message };
+
+  // Wire this template into the campaign's sequence so it actually gets used.
+  // First-touch = step 0; follow-ups = step 1/2/3 with delay_days = 2 between.
+  const stepNumber = input.is_followup ? (input.followup_step ?? 1) : 0;
+  // If a sequence step already exists for this campaign+step, replace its
+  // template pointer (overrides the previous template at that step).
+  const { data: existingSeq } = await sb.from("sequences").select("id")
+    .eq("campaign_id", input.campaign_id).eq("step_number", stepNumber).maybeSingle();
+  if (existingSeq) {
+    await sb.from("sequences").update({ template_id: data.id }).eq("id", existingSeq.id);
+  } else {
+    await sb.from("sequences").insert({
+      campaign_id: input.campaign_id,
+      step_number: stepNumber,
+      template_id: data.id,
+      delay_days: stepNumber === 0 ? 0 : 2,
+    });
+  }
+
   revalidatePath("/templates");
+  revalidatePath("/approve");
   return { ok: true, data };
 }
 

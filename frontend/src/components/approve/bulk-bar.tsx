@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Trash2, Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { rejectSend } from "@/app/actions/approvals";
+import { rejectMany } from "@/app/actions/approvals";
 import { sendSelectedPending } from "@/app/actions/send";
 import { ScheduleDialog } from "./schedule-dialog";
 
@@ -34,10 +34,14 @@ export function BulkBar({ selected, onClear }: { selected: string[]; onClear: ()
     if (!confirm(`Reject ${selected.length} drafts? They will not be sent.`)) return;
     setBusy("reject");
     startTransition(async () => {
-      for (const id of selected) await rejectSend(id);
+      const r = await rejectMany(selected);
       setBusy(null);
-      toast.success(`Rejected ${selected.length} drafts`);
-      onClear();
+      if (r.ok) {
+        toast.success(`Rejected ${r.count} drafts`);
+        onClear();
+      } else {
+        toast.error(r.error ?? "Reject failed");
+      }
     });
   }
 
