@@ -38,22 +38,22 @@ export function DiscoverResults({ people, totalAvailable }: {
     }
 
     startTransition(async () => {
-      toast.info(`Adding ${toAdd.length} contact(s)…`);
-      const r = await addDiscoveredToContacts({ people: toAdd, batchLabel });
+      toast.info(autoGenerate
+        ? `Adding ${toAdd.length} contact(s) + generating drafts…`
+        : `Adding ${toAdd.length} contact(s)…`);
+      const r = await addDiscoveredToContacts({
+        people: toAdd, batchLabel, autoGenerate,
+      });
       if (!r.ok) { toast.error(r.error ?? "Failed."); return; }
+
       const parts: string[] = [];
       if (r.imported > 0) parts.push(`✓ ${r.imported} new`);
       if (r.updated > 0) parts.push(`↻ ${r.updated} updated`);
       if (r.failed > 0) parts.push(`✗ ${r.failed} failed`);
-      toast.success(parts.join(" · "));
-
-      if (autoGenerate && (r.imported + r.updated) > 0) {
-        // We don't have contact_ids back; do a refetch by email is overkill —
-        // instead just trigger generate-for-batch. Simplest: tell user to
-        // hit Generate Drafts in /approve, OR generate by emails via a
-        // separate query. For now, log a hint.
-        toast.info(`Now go to /approve and click Generate Drafts to create their drafts.`);
+      if (typeof r.drafts_created === "number") {
+        parts.push(`📝 ${r.drafts_created} draft${r.drafts_created === 1 ? "" : "s"} in Approve queue`);
       }
+      toast.success(parts.join(" · "));
     });
   }
 
@@ -93,7 +93,10 @@ export function DiscoverResults({ people, totalAvailable }: {
             <label className="flex items-center gap-2 text-xs cursor-pointer">
               <input type="checkbox" checked={autoGenerate}
                 onChange={(e) => setAutoGenerate(e.target.checked)} className="h-4 w-4" />
-              <span>Remind me to generate drafts after adding</span>
+              <span>
+                <strong>Auto-generate drafts</strong>
+                <span className="text-slate-500 ml-1">(land in Approve queue immediately)</span>
+              </span>
             </label>
           </div>
         </div>

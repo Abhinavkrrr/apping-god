@@ -2,6 +2,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { revalidatePath } from "next/cache";
+import { generateDraftsForContacts } from "@/app/actions/send";
 
 export interface DiscoveredPerson {
   first_name: string;
@@ -129,11 +130,22 @@ export async function fillEmailViaHunter(people: DiscoveredPerson[]): Promise<Di
   return people;
 }
 
-/** Add discovered people as contacts with a batch label. */
+/** Add discovered people as contacts with a batch label.
+ *  If autoGenerate=true (default), also creates pending_approval drafts
+ *  for the inserted/updated contacts so they show up in /approve immediately. */
 export async function addDiscoveredToContacts(opts: {
   people: DiscoveredPerson[];
   batchLabel: string;
-}): Promise<{ ok: boolean; imported: number; updated: number; failed: number; error?: string }> {
+  autoGenerate?: boolean;
+}): Promise<{
+  ok: boolean;
+  imported: number;
+  updated: number;
+  failed: number;
+  drafts_created?: number;
+  drafts_skipped?: number;
+  error?: string;
+}> {
   if (!opts.batchLabel?.trim()) {
     return { ok: false, imported: 0, updated: 0, failed: 0, error: "Batch label required." };
   }
@@ -143,6 +155,7 @@ export async function addDiscoveredToContacts(opts: {
 
   const sb = createAdminClient();
   let imported = 0, updated = 0, failed = 0;
+  const contactIds: string[] = [];
 
   for (const p of opts.people) {
     const email = (p.email ?? "").toLowerCase().trim();
@@ -167,30 +180,43 @@ export async function addDiscoveredToContacts(opts: {
       .eq("email", email).maybeSingle();
 
     const cf = { batch_label: opts.batchLabel.trim(), source_id: p.apollo_id };
+    const emailStatus = p.email_status === "verified" ? "valid"
+      : p.email_status === "guess" ? "risky" : "unverified";
 
     if (existing) {
       const merged = { ...((existing.custom_fields as object) ?? {}), ...cf };
       await sb.from("contacts").update({
         first_name: p.first_name, last_name: p.last_name || null,
         title: p.title, linkedin_url: p.linkedin_url, company_id,
-        custom_fields: merged,
-        email_status: p.email_status === "verified" ? "valid" : (p.email_status === "guess" ? "risky" : "unverified"),
+        custom_fields: merged, email_status: emailStatus,
       }).eq("id", existing.id);
+      contactIds.push(existing.id);
       updated++;
     } else {
-      const { error } = await sb.from("contacts").insert({
+      const { data: created, error } = await sb.from("contacts").insert({
         first_name: p.first_name, last_name: p.last_name || null,
         email, company_id, title: p.title, linkedin_url: p.linkedin_url,
-        source: "hunter-discover", custom_fields: cf,
-        email_status: p.email_status === "verified" ? "valid" : (p.email_status === "guess" ? "risky" : "unverified"),
-      });
-      if (error) failed++;
-      else imported++;
+        source: "hunter-discover", custom_fields: cf, email_status: emailStatus,
+      }).select("id").single();
+      if (error || !created) failed++;
+      else { contactIds.push(created.id); imported++; }
+    }
+  }
+
+  // Auto-generate drafts for these contacts so they land in /approve immediately
+  let drafts_created: number | undefined;
+  let drafts_skipped: number | undefined;
+  const autoGen = opts.autoGenerate ?? true;
+  if (autoGen && contactIds.length > 0) {
+    const g = await generateDraftsForContacts(contactIds);
+    if (g.ok) {
+      drafts_created = g.created ?? 0;
+      drafts_skipped = g.skipped ?? 0;
     }
   }
 
   revalidatePath("/contacts");
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, imported, updated, failed };
+  return { ok: true, imported, updated, failed, drafts_created, drafts_skipped };
 }
