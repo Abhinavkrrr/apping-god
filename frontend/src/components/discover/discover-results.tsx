@@ -145,7 +145,14 @@ export function DiscoverResults({ people, totalAvailable }: {
                         className="h-4 w-4 rounded border-slate-300 disabled:opacity-30"
                       />
                     </td>
-                    <td className="px-3 py-2 font-medium">{p.full_name || "—"}</td>
+                    <td className="px-3 py-2 font-medium">
+                      {p.full_name || "—"}
+                      {p.providers && p.providers.length > 0 && (
+                        <span className="block text-[9px] text-slate-400 mt-0.5">
+                          via {p.providers.join("+")}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-slate-600 text-xs">{p.title || "—"}</td>
                     <td className="px-3 py-2 text-slate-700">{p.company_name}</td>
                     <td className="px-3 py-2">

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Search, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -26,6 +27,8 @@ export function DiscoverForm() {
   const [perPage, setPerPage] = useState(10);
   const [people, setPeople] = useState<DiscoveredPerson[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [perProvider, setPerProvider] = useState<{ name: string; ok: boolean; count: number; error?: string }[]>([]);
+  const [enabledProvs, setEnabledProvs] = useState<string[]>([]);
   const [isPending, startTransition] = useTransition();
 
   function search() {
@@ -37,18 +40,20 @@ export function DiscoverForm() {
     if (domains.length === 0) { toast.error("Add at least one company domain."); return; }
 
     startTransition(async () => {
-      toast.info(`Searching Hunter for ${domains.length} domain${domains.length === 1 ? "" : "s"}… (uses ${domains.length} credit${domains.length === 1 ? "" : "s"} of your 25/month)`);
+      toast.info(`Searching across all providers for ${domains.length} domain${domains.length === 1 ? "" : "s"}…`);
       const res = await discoverViaApollo({ domains, titles: titlesArr, per_page: perPage });
       if (!res.ok) { toast.error(`Search failed: ${res.error}`); return; }
+      setPerProvider(res.per_provider ?? []);
+      setEnabledProvs(res.enabled_providers ?? []);
       if (res.people.length === 0) {
-        if (res.total > 0) toast.info(`Hunter has ${res.total} email(s) for those domains but NONE matched your title keywords. Try fewer or broader titles, or leave empty to see everyone.`);
-        else toast.info("Hunter has no emails indexed for those domains yet. Try a more well-known company.");
+        if (res.total > 0) toast.info(`Providers returned ${res.total} email(s) but NONE matched your title keywords. Try broader titles or leave empty.`);
+        else toast.info("No providers had any data for these domains. Try a more well-known company.");
         setPeople([]); setTotal(res.total);
         return;
       }
       setPeople(res.people); setTotal(res.total);
-      toast.success(`✓ ${res.people.length} matched (Hunter has ${res.total} total for these domains)`);
-      if (res.error) toast.warning(res.error.slice(0, 200));
+      const provSummary = res.per_provider?.map(p => `${p.name}:${p.count}`).join(" · ") ?? "";
+      toast.success(`✓ ${res.people.length} unique matched · sources: ${provSummary}`);
     });
   }
 
@@ -58,10 +63,11 @@ export function DiscoverForm() {
         <CardHeader>
           <CardTitle className="text-base">Search criteria</CardTitle>
           <CardDescription>
-            Hunter.io scans the web for emails published at the domain you give it
-            (about pages, press releases, GitHub commits, etc.) and returns
-            employees with names, titles, and emails. Free tier:{" "}
-            <strong>25 domain searches/month, up to 10 emails per search</strong>.
+            Runs every enabled provider <strong>in parallel</strong> and dedupes results
+            by email. Combined free-tier capacity: ~75 searches/month
+            (Hunter 25 + Snov 50). Add SalesQL / ContactOut / Skrapp / RocketReach
+            keys to <code className="text-[10px] bg-slate-100 px-1 rounded">.env</code>
+            to plug them in automatically.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -72,8 +78,7 @@ export function DiscoverForm() {
               placeholder="cred.club&#10;linear.app&#10;perplexity.ai"
               className="mt-1 font-mono text-xs" />
             <p className="text-[10px] text-slate-500 mt-1">
-              One per line. Strip http/path: <code>cred.club</code>, not <code>https://cred.club/about</code>.
-              Each domain costs 1 Hunter credit.
+              One per line. Each domain costs 1 credit on each enabled provider.
             </p>
           </div>
 
@@ -89,19 +94,15 @@ export function DiscoverForm() {
                 </button>
               ))}
             </div>
-            <p className="text-[10px] text-slate-500 mt-1">
-              Case-insensitive substring match on Hunter&apos;s &quot;position&quot; field.
-              <strong> If you get 0 matches, try leaving this blank</strong> to see what titles Hunter has.
-            </p>
           </div>
 
           <div>
-            <Label>Max results per domain</Label>
-            <Input type="number" min={1} max={10} value={perPage}
-              onChange={(e) => setPerPage(Math.min(parseInt(e.target.value || "10"), 10))} className="mt-1 w-32" />
+            <Label>Max results per domain per provider</Label>
+            <Input type="number" min={1} max={100} value={perPage}
+              onChange={(e) => setPerPage(Math.min(parseInt(e.target.value || "10"), 100))} className="mt-1 w-32" />
             <p className="text-[10px] text-slate-500 mt-1">
-              Hunter free tier caps at <strong>10 per search</strong>. Higher values return HTTP 400.
-              For more, add the company on the next search (each domain = 1 credit).
+              Hunter free tier caps at <strong>10 per search</strong>. Snov free up to ~100.
+              Higher values use more credits proportionally.
             </p>
           </div>
 
@@ -112,6 +113,34 @@ export function DiscoverForm() {
           </Button>
         </CardContent>
       </Card>
+
+      {perProvider.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Last search · per-provider breakdown</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {perProvider.map(p => (
+                <Badge key={p.name} variant={p.ok && p.count > 0 ? "success" : p.ok ? "default" : "destructive"}>
+                  {p.name}: {p.count}
+                  {p.error && p.error.length < 60 && <span className="ml-1 opacity-75">({p.error})</span>}
+                </Badge>
+              ))}
+              {enabledProvs.length === 1 && (
+                <span className="text-slate-400 text-[10px] ml-2">
+                  Only {enabledProvs[0]} enabled. Add more keys to .env to scale up.
+                </span>
+              )}
+              {enabledProvs.length > 1 && (
+                <span className="text-slate-400 text-[10px] ml-2">
+                  {enabledProvs.length} providers running in parallel — overlapping people are deduped.
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {people !== null && <DiscoverResults people={people} totalAvailable={total} />}
     </div>
