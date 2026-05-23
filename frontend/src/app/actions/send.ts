@@ -337,6 +337,47 @@ function resolveScheduledAt(opts?: ScheduleOpts): Date {
   ));
 }
 
+// ============================================================
+// CANCEL a scheduled send (reverts back to pending_approval)
+// ============================================================
+export async function cancelScheduledSend(sendId: string) {
+  return cancelScheduledByIds([sendId]);
+}
+
+export async function cancelScheduledSends(sendIds: string[]) {
+  if (!sendIds || sendIds.length === 0) {
+    return { ok: false, error: "No sends selected." };
+  }
+  return cancelScheduledByIds(sendIds);
+}
+
+export async function cancelAllScheduled() {
+  return cancelScheduledByIds(undefined);
+}
+
+async function cancelScheduledByIds(sendIds: string[] | undefined) {
+  const sb = createAdminClient();
+  let q = sb.from("sends").select("id").eq("status", "approved").is("sent_at", null);
+  if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
+  const { data: scheduled } = await q;
+  if (!scheduled || scheduled.length === 0) {
+    return { ok: false, error: "No scheduled sends to cancel." };
+  }
+  const ids = scheduled.map((s: any) => s.id);
+
+  await sb.from("sends").update({
+    status: "pending_approval", scheduled_at: null,
+  }).in("id", ids);
+  await sb.from("approvals").update({
+    status: "pending", reviewed_at: null,
+  }).in("send_id", ids);
+
+  revalidatePath("/approve");
+  revalidatePath("/scheduled");
+  revalidatePath("/");
+  return { ok: true, cancelled: ids.length };
+}
+
 async function schedulePendingByIds(sendIds: string[] | undefined, opts?: ScheduleOpts) {
   const sb = createAdminClient();
   const scheduledAt = resolveScheduledAt(opts);
