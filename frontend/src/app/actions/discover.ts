@@ -8,123 +8,122 @@ export interface DiscoveredPerson {
   last_name: string;
   full_name: string;
   email: string | null;
-  email_status: string | null;
+  email_status: string | null;     // 'verified' | 'risky' | etc.
   title: string | null;
   linkedin_url: string | null;
   company_name: string;
   company_domain: string | null;
-  apollo_id: string;
+  apollo_id: string;               // unique-ish id (we generate "domain:email")
 }
 
 interface DiscoverInput {
-  domains: string[];           // ['stripe.com', 'linear.app']
-  titles: string[];            // ['Founder', 'CEO', 'Recruiter']
-  location?: string;           // e.g. 'India', 'United States'
-  per_page?: number;           // default 25, max 100
-  page?: number;               // default 1
+  domains: string[];           // ['cred.club', 'linear.app']
+  titles: string[];            // ['Founder', 'Product Manager'] — filtered client-side
+  per_page?: number;           // default 25; max 100 (Hunter limit)
 }
 
 interface DiscoverResult {
   ok: boolean;
   people: DiscoveredPerson[];
   total: number;
-  page: number;
   error?: string;
 }
 
-/** Search Apollo for people matching the given criteria. */
-export async function discoverViaApollo(input: DiscoverInput): Promise<DiscoverResult> {
-  const key = process.env.APOLLO_API_KEY;
-  if (!key) {
-    return { ok: false, people: [], total: 0, page: 1, error: "APOLLO_API_KEY not set in .env" };
-  }
-  if (!input.domains || input.domains.length === 0) {
-    return { ok: false, people: [], total: 0, page: 1, error: "At least one company domain is required." };
-  }
-  if (!input.titles || input.titles.length === 0) {
-    return { ok: false, people: [], total: 0, page: 1, error: "At least one title keyword is required." };
-  }
-
-  const body: Record<string, unknown> = {
-    q_organization_domains_list: input.domains,
-    person_titles: input.titles,
-    page: input.page ?? 1,
-    per_page: Math.min(input.per_page ?? 25, 100),
-  };
-  if (input.location) body.person_locations = [input.location];
-
-  try {
-    const res = await fetch("https://api.apollo.io/api/v1/mixed_people/search", {
-      method: "POST",
-      headers: {
-        "X-Api-Key": key,
-        "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const txt = await res.text();
-      return { ok: false, people: [], total: 0, page: 1, error: `Apollo HTTP ${res.status}: ${txt.slice(0, 200)}` };
-    }
-    const json = await res.json();
-    const total = json?.pagination?.total_entries ?? 0;
-    const people: DiscoveredPerson[] = (json?.people ?? []).map((p: any) => ({
-      first_name: p.first_name ?? "",
-      last_name: p.last_name ?? "",
-      full_name: p.name ?? `${p.first_name ?? ""} ${p.last_name ?? ""}`.trim(),
-      email: p.email ?? null,
-      email_status: p.email_status ?? null,
-      title: p.title ?? null,
-      linkedin_url: p.linkedin_url ?? null,
-      company_name: p.organization?.name ?? "",
-      company_domain: p.organization?.primary_domain ?? p.organization?.website_url ?? null,
-      apollo_id: p.id ?? "",
-    }));
-
-    return { ok: true, people, total, page: input.page ?? 1 };
-  } catch (e) {
-    return {
-      ok: false, people: [], total: 0, page: 1,
-      error: e instanceof Error ? e.message : "Unknown error",
-    };
-  }
+// Map Hunter's confidence (0-100) to our email_status
+function statusFromScore(score: number | null | undefined): string {
+  if (score == null) return "unverified";
+  if (score >= 80) return "verified";
+  if (score >= 50) return "risky";
+  return "guess";
 }
 
-/** Use Hunter to find emails for people Apollo couldn't reveal. */
-export async function fillEmailViaHunter(people: DiscoveredPerson[]): Promise<DiscoveredPerson[]> {
-  const key = process.env.HUNTER_API_KEY;
-  if (!key) return people;
+/** Match a person's title against any of the search keywords (case-insensitive substring). */
+function matchesTitle(position: string | null | undefined, keywords: string[]): boolean {
+  if (!keywords.length) return true;
+  if (!position) return false;
+  const p = position.toLowerCase();
+  return keywords.some(k => p.includes(k.toLowerCase()));
+}
 
-  const out: DiscoveredPerson[] = [];
-  for (const p of people) {
-    if (p.email || !p.company_domain || !p.first_name) {
-      out.push(p); continue;
-    }
-    const domain = p.company_domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    try {
-      const url = new URL("https://api.hunter.io/v2/email-finder");
-      url.searchParams.set("domain", domain);
-      url.searchParams.set("first_name", p.first_name);
-      if (p.last_name) url.searchParams.set("last_name", p.last_name);
-      url.searchParams.set("api_key", key);
-      const r = await fetch(url);
-      if (r.ok) {
-        const j = await r.json();
-        if (j?.data?.email) {
-          out.push({
-            ...p,
-            email: j.data.email,
-            email_status: j.data.score >= 80 ? "verified" : "risky",
-          });
-          continue;
-        }
-      }
-    } catch { /* ignore, just skip */ }
-    out.push(p);
+/** Search via Hunter's domain-search — free tier 25/month, up to 100 results each. */
+export async function discoverViaApollo(input: DiscoverInput): Promise<DiscoverResult> {
+  const key = process.env.HUNTER_API_KEY;
+  if (!key) {
+    return { ok: false, people: [], total: 0, error: "HUNTER_API_KEY not set in .env" };
   }
-  return out;
+  if (!input.domains || input.domains.length === 0) {
+    return { ok: false, people: [], total: 0, error: "At least one company domain is required." };
+  }
+
+  const allPeople: DiscoveredPerson[] = [];
+  const errors: string[] = [];
+  let totalFromAllDomains = 0;
+  const perDomain = Math.min(input.per_page ?? 100, 100);
+
+  for (const domain of input.domains) {
+    try {
+      const url = new URL("https://api.hunter.io/v2/domain-search");
+      url.searchParams.set("domain", domain);
+      url.searchParams.set("limit", String(perDomain));
+      url.searchParams.set("api_key", key);
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) {
+        const txt = await res.text();
+        errors.push(`${domain}: HTTP ${res.status} — ${txt.slice(0, 150)}`);
+        continue;
+      }
+      const json = await res.json();
+      const orgName = json?.data?.organization ?? domain;
+      const allEmails = json?.data?.emails ?? [];
+      totalFromAllDomains += allEmails.length;
+
+      for (const e of allEmails) {
+        if (!e.value) continue;
+        if (!matchesTitle(e.position, input.titles)) continue;
+        allPeople.push({
+          first_name: e.first_name ?? "",
+          last_name: e.last_name ?? "",
+          full_name: [e.first_name, e.last_name].filter(Boolean).join(" "),
+          email: e.value,
+          email_status: statusFromScore(e.confidence),
+          title: e.position ?? null,
+          linkedin_url: e.linkedin ?? null,
+          company_name: orgName,
+          company_domain: domain,
+          apollo_id: `${domain}:${e.value}`,
+        });
+      }
+    } catch (err) {
+      errors.push(`${domain}: ${err instanceof Error ? err.message : "fetch failed"}`);
+    }
+  }
+
+  // Dedupe by email
+  const seen = new Set<string>();
+  const deduped: DiscoveredPerson[] = [];
+  for (const p of allPeople) {
+    const key = p.email?.toLowerCase() ?? p.apollo_id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(p);
+  }
+
+  if (deduped.length === 0 && errors.length > 0) {
+    return { ok: false, people: [], total: totalFromAllDomains, error: errors.join(" · ") };
+  }
+
+  return {
+    ok: true,
+    people: deduped,
+    total: totalFromAllDomains,
+    ...(errors.length > 0 ? { error: `Some domains failed: ${errors.join(" · ")}` } : {}),
+  };
+}
+
+/** Apollo-based "fill missing email" — now unused since Hunter returns emails inline.
+ * Kept as a no-op for backwards compatibility with discover-form.tsx. */
+export async function fillEmailViaHunter(people: DiscoveredPerson[]): Promise<DiscoveredPerson[]> {
+  return people;
 }
 
 /** Add discovered people as contacts with a batch label. */
@@ -146,7 +145,6 @@ export async function addDiscoveredToContacts(opts: {
     const email = (p.email ?? "").toLowerCase().trim();
     if (!email || !email.includes("@") || !p.first_name) { failed++; continue; }
 
-    // Upsert company
     let company_id: string | null = null;
     if (p.company_name) {
       const { data: existingCo } = await sb.from("companies").select("id")
@@ -162,11 +160,10 @@ export async function addDiscoveredToContacts(opts: {
       }
     }
 
-    // Check existing contact
     const { data: existing } = await sb.from("contacts").select("id, custom_fields")
       .eq("email", email).maybeSingle();
 
-    const cf = { batch_label: opts.batchLabel.trim(), apollo_id: p.apollo_id };
+    const cf = { batch_label: opts.batchLabel.trim(), source_id: p.apollo_id };
 
     if (existing) {
       const merged = { ...((existing.custom_fields as object) ?? {}), ...cf };
@@ -174,13 +171,15 @@ export async function addDiscoveredToContacts(opts: {
         first_name: p.first_name, last_name: p.last_name || null,
         title: p.title, linkedin_url: p.linkedin_url, company_id,
         custom_fields: merged,
+        email_status: p.email_status === "verified" ? "valid" : (p.email_status === "guess" ? "risky" : "unverified"),
       }).eq("id", existing.id);
       updated++;
     } else {
       const { error } = await sb.from("contacts").insert({
         first_name: p.first_name, last_name: p.last_name || null,
         email, company_id, title: p.title, linkedin_url: p.linkedin_url,
-        source: "apollo-discover", custom_fields: cf,
+        source: "hunter-discover", custom_fields: cf,
+        email_status: p.email_status === "verified" ? "valid" : (p.email_status === "guess" ? "risky" : "unverified"),
       });
       if (error) failed++;
       else imported++;
