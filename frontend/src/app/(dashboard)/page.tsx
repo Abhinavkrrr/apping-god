@@ -1,5 +1,9 @@
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Send, MailOpen, MessageSquare, Activity, Users, Building2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  Send, MailOpen, MessageSquare, Users, ArrowRight, CheckCircle2,
+} from "lucide-react";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
@@ -16,12 +20,16 @@ async function loadOverview() {
     { count: sentToday },
     { count: openedToday },
     { count: repliesTotal },
+    { count: pendingApproval },
+    { count: scheduledCount },
   ] = await Promise.all([
     sb.from("contacts").select("id", { count: "exact", head: true }),
     sb.from("companies").select("id", { count: "exact", head: true }),
     sb.from("events").select("id", { count: "exact", head: true }).eq("type", "sent").gte("timestamp", todayStart.toISOString()),
     sb.from("events").select("id", { count: "exact", head: true }).eq("type", "open").gte("timestamp", todayStart.toISOString()),
     sb.from("replies").select("id", { count: "exact", head: true }),
+    sb.from("sends").select("id", { count: "exact", head: true }).eq("status", "pending_approval"),
+    sb.from("sends").select("id", { count: "exact", head: true }).eq("status", "approved").is("sent_at", null),
   ]);
 
   return {
@@ -30,6 +38,8 @@ async function loadOverview() {
     sentToday: sentToday ?? 0,
     openedToday: openedToday ?? 0,
     repliesTotal: repliesTotal ?? 0,
+    pendingApproval: pendingApproval ?? 0,
+    scheduledCount: scheduledCount ?? 0,
   };
 }
 
@@ -40,16 +50,23 @@ export default async function OverviewPage() {
     { label: "Contacts loaded", value: data.contacts.toLocaleString(), icon: Users, hint: `${data.companies} companies` },
     { label: "Sent today", value: data.sentToday.toLocaleString(), icon: Send, hint: "Across all accounts" },
     { label: "Opens today", value: data.openedToday.toLocaleString(), icon: MailOpen, hint: "Tracked via Cloudflare pixel" },
-    { label: "Replies (total)", value: data.repliesTotal.toLocaleString(), icon: MessageSquare, hint: "Detected via IMAP (Phase 4)" },
+    { label: "Replies (total)", value: data.repliesTotal.toLocaleString(), icon: MessageSquare, hint: "Auto-classified via Groq" },
+  ];
+
+  const systemRows = [
+    { label: "Send pipeline", detail: "Supabase Edge Function (SMTP from cloud)", status: "Live" },
+    { label: "Tracking pixel + click redirect", detail: "Cloudflare Workers (global edge)", status: "Live" },
+    { label: "Reply detection", detail: "GitHub Actions cron, every 15 min (IMAP + Groq classify)", status: "Live" },
+    { label: "Scheduled-send dispatcher", detail: "GitHub Actions cron, every 15 min", status: "Live" },
+    { label: "Follow-up generation", detail: "Supabase pg_cron, every 15 min", status: "Live" },
+    { label: "AI per-row personalization", detail: "Groq Llama 3.3 70B (Gemini fallback)", status: "Live" },
   ];
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Live status of your outreach pipeline.
-        </p>
+        <p className="text-sm text-slate-500 mt-1">Live status of your outreach pipeline.</p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -70,23 +87,62 @@ export default async function OverviewPage() {
         })}
       </div>
 
+      <div className="grid gap-4 md:grid-cols-3">
+        <Link href="/approve" className="block">
+          <Card className="hover:bg-slate-50 cursor-pointer h-full">
+            <CardContent className="py-4">
+              <div className="text-xs text-slate-500 uppercase tracking-wide">Approve & Send</div>
+              <div className="text-2xl font-bold mt-1">{data.pendingApproval}</div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                pending review <ArrowRight className="h-3 w-3" />
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/scheduled" className="block">
+          <Card className="hover:bg-slate-50 cursor-pointer h-full">
+            <CardContent className="py-4">
+              <div className="text-xs text-slate-500 uppercase tracking-wide">Scheduled</div>
+              <div className="text-2xl font-bold mt-1">{data.scheduledCount}</div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                queued for autonomous send <ArrowRight className="h-3 w-3" />
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/inbox" className="block">
+          <Card className="hover:bg-slate-50 cursor-pointer h-full">
+            <CardContent className="py-4">
+              <div className="text-xs text-slate-500 uppercase tracking-wide">Reply inbox</div>
+              <div className="text-2xl font-bold mt-1">{data.repliesTotal}</div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                classified replies <ArrowRight className="h-3 w-3" />
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+      </div>
+
       <Card>
         <CardHeader>
-          <CardTitle>Phase 2 complete ✓</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            System status
+            <Badge variant="success">All systems live</Badge>
+          </CardTitle>
         </CardHeader>
-        <CardContent className="text-sm text-slate-600 space-y-2">
-          <p>
-            The send-worker Edge Function is live at{" "}
-            <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
-              ouzfrefnhlxhpeyufllt.functions.supabase.co/send-worker
-            </code>
-            . Tracking pixel runs on Cloudflare Workers.
-          </p>
-          <p>
-            <strong>Next:</strong> approval queue and full LLM personalization land in Phase 3.
-            Until then, send test emails via{" "}
-            <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">node scripts/send_one.js</code>.
-          </p>
+        <CardContent>
+          <div className="space-y-2">
+            {systemRows.map((r) => (
+              <div key={r.label} className="flex items-start gap-3 py-1.5 text-sm">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-slate-900">{r.label}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{r.detail}</div>
+                </div>
+                <Badge variant="success" className="text-[10px]">{r.status}</Badge>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>
