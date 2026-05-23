@@ -1,0 +1,57 @@
+name: Dispatch scheduled sends (every 15 min)
+
+# Drains any sends with status='approved' AND scheduled_at <= now.
+# Runs every 15 min so ANY schedule time the user picks gets honored
+# (within 15-min granularity), not just the daily 10:30 morning batch.
+#
+# Lighter than morning-dispatch: only runs the dispatcher, no reply
+# polling or follow-up generation (those have their own workflows).
+#
+# Cost: ~30 sec per run × 96 runs/day = ~48 min/day = ~1440 min/month
+# on the free 2000 min/month allotment. Combined with poll-replies
+# (~50 min/day) this fits under the limit.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: dispatch-scheduled
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }   # native WebSocket required for Supabase realtime
+
+      - name: Install script deps
+        working-directory: scripts
+        run: npm install
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env <<EOF
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF=${{ secrets.SUPABASE_PROJECT_REF }}
+          GMAIL_USER=${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          TRACKING_BASE_URL=${{ secrets.TRACKING_BASE_URL }}
+          SENDER_NAME=${{ secrets.SENDER_NAME }}
+          SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}
+          SENDER_PHONE=${{ secrets.SENDER_PHONE }}
+          SENDER_LINKEDIN=${{ secrets.SENDER_LINKEDIN }}
+          SENDER_PHYSICAL_ADDRESS=${{ secrets.SENDER_PHYSICAL_ADDRESS }}
+          EOF
+
+      - name: Drain approved queue
+        run: node scripts/dispatch_approved.js --limit 20
