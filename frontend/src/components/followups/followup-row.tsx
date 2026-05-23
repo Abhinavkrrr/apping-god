@@ -7,22 +7,27 @@ import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { sendFollowupNow } from "@/app/actions/followups";
 
-interface Props {
-  thread: {
-    last_send_id: string;
-    contact_name: string;
-    contact_email: string;
-    company_name: string;
-    sent_at: string;
-    days_since: number;
-    highest_step: number; // 0 = first touch sent, 1/2/3 = followups sent
-    has_reply: boolean;
-  };
+interface Thread {
+  last_send_id: string;
+  contact_name: string;
+  contact_email: string;
+  company_name: string;
+  sent_at: string;
+  days_since: number;
+  highest_step: number;
+  has_reply: boolean;
 }
 
 const STEP_LABEL = ["First touch sent", "Follow-up 1 sent", "Follow-up 2 sent", "Follow-up 3 sent", "All done"];
 
-export function FollowupRow({ thread }: Props) {
+export function FollowupRow({
+  thread, checked, onCheck, selectable,
+}: {
+  thread: Thread;
+  checked: boolean;
+  onCheck: (v: boolean) => void;
+  selectable: boolean;
+}) {
   const [isPending, startTransition] = useTransition();
   const nextStep = thread.highest_step + 1;
   const canFollowup = nextStep <= 3 && !thread.has_reply;
@@ -38,6 +43,13 @@ export function FollowupRow({ thread }: Props) {
 
   return (
     <div className="flex items-center gap-3 p-3 border-b border-slate-100 last:border-0 hover:bg-slate-50">
+      <input
+        type="checkbox" checked={checked}
+        onChange={(e) => onCheck(e.target.checked)}
+        disabled={!selectable}
+        className="h-4 w-4 rounded border-slate-300 disabled:opacity-30"
+        title={selectable ? "Select for bulk action" : "No follow-up possible (replied or all done)"}
+      />
       <div className="flex-1 min-w-0">
         <div className="font-medium text-sm">
           {thread.contact_name}{" "}

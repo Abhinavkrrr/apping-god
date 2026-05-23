@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { FollowupRow } from "@/components/followups/followup-row";
+import { FollowupList } from "@/components/followups/followup-list";
 import { Clock } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -137,7 +137,7 @@ export default async function FollowupsPage() {
               No threads yet. Send some first-touch emails from <strong>Approve & Send</strong>.
             </div>
           ) : (
-            <div>{threads.map(t => <FollowupRow key={t.contact_id} thread={t} />)}</div>
+            <FollowupList threads={threads} />
           )}
         </CardContent>
       </Card>

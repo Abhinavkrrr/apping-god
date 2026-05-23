@@ -8,6 +8,31 @@ import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 const FUNCTION_URL = `https://${process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0]}.functions.supabase.co/send-worker`;
 
 /**
+ * Bulk: send the next follow-up step for each given parent send.
+ * Returns { sent, failed, skipped } counts.
+ */
+export async function sendFollowupsBatch(parentSendIds: string[]) {
+  if (!parentSendIds || parentSendIds.length === 0) {
+    return { ok: false as const, error: "Nothing selected." };
+  }
+  let sent = 0, failed = 0, skipped = 0;
+  const sampleErrors: string[] = [];
+  for (const id of parentSendIds) {
+    const r = await sendFollowupNow(id);
+    if (r.ok) sent++;
+    else {
+      // Treat "already replied" or "all 3 sent" as skip rather than fail
+      if (/already|all 3/i.test(r.error ?? "")) skipped++;
+      else {
+        failed++;
+        if (sampleErrors.length < 5) sampleErrors.push(`${id.slice(0, 8)}: ${r.error}`);
+      }
+    }
+  }
+  return { ok: true as const, sent, failed, skipped, sample_errors: sampleErrors };
+}
+
+/**
  * Manually send the next follow-up step for an existing sent message.
  * @param parentSendId  the original send (or the last follow-up in the chain)
  */
