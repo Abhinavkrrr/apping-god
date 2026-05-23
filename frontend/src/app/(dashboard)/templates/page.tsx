@@ -2,17 +2,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { TemplateEditor } from "@/components/templates/template-editor";
+import { NewTemplateModal } from "@/components/templates/new-template-modal";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 async function loadTemplates() {
   const sb = createAdminClient();
-  // Only show active campaigns (consolidation archived Product + Growth).
   const { data: campaigns } = await sb
     .from("campaigns").select("id, name").eq("status", "active").order("name");
 
-  if (!campaigns) return [];
+  if (!campaigns) return { groups: [], campaigns: [] };
 
   const groups = await Promise.all(
     campaigns.map(async (c) => {
@@ -24,22 +24,26 @@ async function loadTemplates() {
       return { campaign: c, templates: templates ?? [] };
     })
   );
-  return groups;
+  return { groups, campaigns };
 }
 
 export default async function TemplatesPage() {
-  const groups = await loadTemplates();
+  const { groups, campaigns } = await loadTemplates();
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Templates</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Click <strong>Edit</strong> on any template to change the subject, body, or insert
-          variables. Use <code className="rounded bg-slate-100 px-1 text-xs">{`{{first_name}}`}</code>,
-          <code className="rounded bg-slate-100 px-1 text-xs mx-1">{`{{company}}`}</code>, etc., and
-          <code className="rounded bg-slate-100 px-1 text-xs ml-1">**bold**</code> for emphasis.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Templates</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Edit any template inline. <strong>Saving re-renders every pending draft</strong> using
+            that template — your edits show up in Approve queue and each Preview immediately.
+            Use <code className="rounded bg-slate-100 px-1 text-xs">{`{{first_name}}`}</code>,
+            <code className="rounded bg-slate-100 px-1 text-xs mx-1">{`{{company}}`}</code>, etc., and
+            <code className="rounded bg-slate-100 px-1 text-xs ml-1">**bold**</code> for emphasis.
+          </p>
+        </div>
+        <NewTemplateModal campaigns={campaigns} />
       </div>
 
       {groups.map(({ campaign, templates }) => (

@@ -52,7 +52,7 @@ export async function getMasterTemplate() {
 }
 
 // ============================================================
-// Save edits to master template
+// Save edits to master template + re-render all pending drafts
 // ============================================================
 export async function saveMasterTemplate(templateId: string, subject: string, body: string) {
   const sb = createAdminClient();
@@ -60,9 +60,30 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
     subject_tmpl: subject, body_tmpl: body,
   }).eq("id", templateId);
   if (error) return { ok: false, error: error.message };
+
+  // Re-render every pending_approval draft using this template so the new
+  // content shows up immediately in Approve queue + Preview.
+  const { data: drafts } = await sb.from("sends").select(`
+    id, contacts(first_name, last_name, email, title, companies(id, name, domain, brief_one_line))
+  `).eq("template_id", templateId).eq("status", "pending_approval");
+
+  let rerendered = 0;
+  for (const d of drafts ?? []) {
+    const c = (d as any).contacts;
+    if (!c) continue;
+    const co = c.companies ?? null;
+    const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
+    const subj = render(subject, ctx);
+    const text = render(body, ctx);
+    const html = plainToTrackedHtml(text, d.id);
+    await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
+    rerendered++;
+  }
+
   revalidatePath("/approve");
   revalidatePath("/templates");
-  return { ok: true };
+  revalidatePath("/");
+  return { ok: true, rerendered };
 }
 
 // ============================================================
@@ -150,7 +171,7 @@ export async function generateDrafts(opts: {
   if (!seq?.templates) return { ok: false, error: "No first-touch template for master campaign." };
   const template = (seq as any).templates;
 
-  // Save edits to template if provided
+  // Save edits to template if provided + re-render any existing pending drafts
   if (opts.overrideSubject || opts.overrideBody) {
     await sb.from("templates").update({
       subject_tmpl: opts.overrideSubject ?? template.subject_tmpl,
@@ -158,6 +179,22 @@ export async function generateDrafts(opts: {
     }).eq("id", template.id);
     template.subject_tmpl = opts.overrideSubject ?? template.subject_tmpl;
     template.body_tmpl = opts.overrideBody ?? template.body_tmpl;
+
+    // Re-render all currently-pending drafts using this template so the
+    // edits show up in the Approve queue immediately.
+    const { data: existingDrafts } = await sb.from("sends").select(`
+      id, contacts(first_name, last_name, email, title, companies(id, name, domain, brief_one_line))
+    `).eq("template_id", template.id).eq("status", "pending_approval");
+    for (const d of existingDrafts ?? []) {
+      const c = (d as any).contacts;
+      if (!c) continue;
+      const co = c.companies ?? null;
+      const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
+      const subj = render(template.subject_tmpl, ctx);
+      const text = render(template.body_tmpl, ctx);
+      const html = plainToTrackedHtml(text, d.id);
+      await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
+    }
   }
 
   // Optionally clear existing drafts

@@ -66,7 +66,8 @@ export function TemplateEditor({ template, campaignName }: Props) {
     startTransition(async () => {
       const res = await updateTemplate(template.id, { subject_tmpl: subject, body_tmpl: body });
       if (res.ok) {
-        toast.success(`Saved "${template.variant_label}"`);
+        const tail = res.rerendered ? ` · re-rendered ${res.rerendered} pending draft${res.rerendered === 1 ? "" : "s"}` : "";
+        toast.success(`Saved "${template.variant_label}"${tail}`);
         setOpen(false);
       } else {
         toast.error(`Save failed: ${res.error}`);
