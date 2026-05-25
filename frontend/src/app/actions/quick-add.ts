@@ -29,7 +29,22 @@ export async function addContactAndQueue(input: {
     .eq("email", lowerEmail).maybeSingle();
   if (unsub) return { ok: false, error: `${input.email} previously unsubscribed.` };
 
-  const addResult = await addContact({ ...input, source: "quick-add" });
+  // Reuse a single persistent "Manual / Quick Add" batch so the filter UI
+  // doesn't get cluttered with one batch per quick-add. Created lazily on
+  // first quick-add.
+  let { data: quickBatch } = await sb.from("import_batches")
+    .select("id").eq("source", "quick_add").eq("name", "Quick Add").maybeSingle();
+  if (!quickBatch) {
+    const { data } = await sb.from("import_batches").insert({
+      name: "Quick Add", source: "quick_add",
+      notes: "Contacts added one-at-a-time via the dashboard.",
+    }).select("id").single();
+    quickBatch = data;
+  }
+
+  const addResult = await addContact({
+    ...input, source: "quick-add", import_batch_id: quickBatch?.id,
+  });
   if (!addResult.ok) return { ok: false, error: addResult.error };
   const contactId = addResult.contact_id!;
 

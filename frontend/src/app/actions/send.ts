@@ -58,8 +58,8 @@ export async function getMasterTemplate(campaignName?: string) {
     subject_tmpl: tpl.subject_tmpl as string,
     body_tmpl: tpl.body_tmpl as string,
     total_contacts: totalContacts,
-    eligible_contacts: eligibleGlobal,            // default = global dedup
-    eligible_contacts_same_campaign: eligibleSameCampaign,  // when allowMultiCampaign is on
+    eligible_contacts: eligibleSameCampaign,        // default = per-campaign dedup (matches old behavior)
+    eligible_contacts_global: eligibleGlobal,       // when globalDedup is on
     cross_campaign_collisions: eligibleSameCampaign - eligibleGlobal,
   };
 }
@@ -127,7 +127,7 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 export async function generateDraftsForContacts(
   contactIds: string[],
   campaignName?: string,
-  opts: { allowMultiCampaign?: boolean } = {}
+  opts: { globalDedup?: boolean } = {}
 ) {
   const sb = createAdminClient();
   if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
@@ -142,14 +142,15 @@ export async function generateDraftsForContacts(
   if (!seq?.templates) return { ok: false, error: "Master template not found." };
   const template = (seq as any).templates;
 
-  // GLOBAL dedup by default: skip any contact who already has a draft/send in
-  // ANY active campaign. Caller can opt-in to per-campaign dedup (the old
-  // behavior) by passing allowMultiCampaign: true — e.g. when intentionally
-  // pitching the same contact across campaigns.
+  // Per-campaign dedup: only skip contacts already touched in THIS campaign.
+  // Same contact can legitimately appear in multiple campaigns (different
+  // products = different pitches). The Approve queue is the safety net —
+  // user just shouldn't approve two same-day pitches to the same person.
+  // Set opts.globalDedup to skip contacts touched in ANY campaign.
   const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"])
     .in("contact_id", contactIds);
-  if (opts.allowMultiCampaign) dedupQuery.eq("campaign_id", campaign.id);
+  if (!opts.globalDedup) dedupQuery.eq("campaign_id", campaign.id);
   const { data: existing } = await dedupQuery;
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
 
@@ -211,7 +212,7 @@ export async function generateDrafts(opts: {
   useLlm?: boolean;
   startFresh?: boolean;
   campaignName?: string;       // which campaign's template to use (default: Outreach)
-  allowMultiCampaign?: boolean;// opt-in: pitch contacts who already have a draft/send in OTHER campaigns
+  globalDedup?: boolean;       // opt-in: also skip contacts touched in OTHER campaigns
 }) {
   const sb = createAdminClient();
   const useLlm = opts.useLlm ?? false;
@@ -276,14 +277,13 @@ export async function generateDrafts(opts: {
     return { ok: false, error: "No eligible contacts." };
   }
 
-  // GLOBAL dedup by default: skip any contact already touched in ANY active
-  // campaign. Without this, generating SaaS Sales after Outreach would create
-  // duplicate drafts and recipients would get two different cold pitches
-  // from the same sender. Opt-in to per-campaign dedup (old behavior) via
-  // opts.allowMultiCampaign — use when intentionally cross-pitching.
+  // Per-campaign dedup: each campaign is its own funnel, so the same contact
+  // can be pitched on both (e.g. internship outreach + SaaS sales pitch).
+  // Opt-in to global dedup via opts.globalDedup when you don't want a contact
+  // to appear in multiple campaigns simultaneously.
   const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"]);
-  if (opts.allowMultiCampaign) dedupQuery.eq("campaign_id", campaign.id);
+  if (!opts.globalDedup) dedupQuery.eq("campaign_id", campaign.id);
   const { data: existing } = await dedupQuery;
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
   const pool = (contacts as any[]).filter(c => !touched.has(c.id));

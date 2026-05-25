@@ -33,10 +33,10 @@ async function loadContacts(batchFilter?: string) {
 
   if (batchFilter && batchFilter !== "__all__") {
     if (batchFilter === "__none__") {
-      // contacts with no batch label
-      q = q.or("custom_fields.is.null,custom_fields->>batch_label.is.null");
+      q = q.is("import_batch_id", null);
     } else {
-      q = q.eq("custom_fields->>batch_label", batchFilter);
+      // batchFilter is an import_batches.id (UUID)
+      q = q.eq("import_batch_id", batchFilter);
     }
   }
 
@@ -76,6 +76,10 @@ export default async function ContactsPage({
   const params = await searchParams;
   const batchFilter = params.batch ?? "__all__";
   const { contacts, total, companyCount, batches } = await loadContacts(batchFilter);
+  const activeBatchName =
+    batchFilter === "__all__" ? null
+    : batchFilter === "__none__" ? "Untagged"
+    : (batches.find(b => b.id === batchFilter)?.name ?? "Unknown batch");
 
   return (
     <div className="space-y-6">
@@ -109,9 +113,9 @@ export default async function ContactsPage({
                 </Badge>
               </Link>
               {batches.map(b => (
-                <Link key={b.label} href={`/contacts?batch=${encodeURIComponent(b.label)}`}>
-                  <Badge variant={batchFilter === b.label ? "info" : "default"} className="cursor-pointer">
-                    {b.label} ({b.count})
+                <Link key={b.id} href={`/contacts?batch=${encodeURIComponent(b.id)}`}>
+                  <Badge variant={batchFilter === b.id ? "info" : "default"} className="cursor-pointer">
+                    {b.name} ({b.contact_count})
                   </Badge>
                 </Link>
               ))}
@@ -132,7 +136,7 @@ export default async function ContactsPage({
             <CardTitle className="text-base">
               {batchFilter === "__all__"
                 ? `Recent contacts (first 300)`
-                : `Batch "${batchFilter === "__none__" ? "no batch" : batchFilter}" (first 300)`}
+                : `Batch "${activeBatchName}" (first 300)`}
             </CardTitle>
           </div>
           <CardDescription>
@@ -178,7 +182,7 @@ export default async function ContactsPage({
                   <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-500">
                     {batchFilter === "__all__"
                       ? "No contacts yet. Add one or import a CSV above."
-                      : `No contacts in batch "${batchFilter}".`}
+                      : `No contacts in batch "${activeBatchName}".`}
                   </td></tr>
                 )}
               </tbody>

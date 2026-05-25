@@ -11,8 +11,27 @@ interface AddContactInput {
   company_brief?: string;
   title?: string;
   linkedin_url?: string;
-  batch_label?: string;     // e.g. "VCs March 2026" — for CSV import grouping
-  source?: string;          // e.g. "manual" | "csv-upload" | "quick-add"
+  batch_label?: string;       // legacy; stored in custom_fields for compatibility
+  import_batch_id?: string;   // NEW: FK into import_batches table
+  source?: string;            // e.g. "manual" | "csv-upload" | "quick-add"
+}
+
+/** Create an import_batches row; returns its id. */
+export async function createImportBatch(input: {
+  name: string;
+  source: "csv" | "discover" | "quick_add" | "manual";
+  file_name?: string;
+  notes?: string;
+}): Promise<string> {
+  const sb = createAdminClient();
+  const { data, error } = await sb.from("import_batches").insert({
+    name: input.name,
+    source: input.source,
+    file_name: input.file_name ?? null,
+    notes: input.notes ?? null,
+  }).select("id").single();
+  if (error) throw new Error(`createImportBatch: ${error.message}`);
+  return data.id;
 }
 
 export async function addContact(input: AddContactInput, opts: { skipRevalidate?: boolean } = {}) {
@@ -58,6 +77,8 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
       ...(company_id ? { company_id } : {}),
       ...(input.title?.trim() ? { title: input.title.trim() } : {}),
       ...(input.linkedin_url?.trim() ? { linkedin_url: input.linkedin_url.trim() } : {}),
+      // Don't clobber import_batch_id on an existing contact — they were
+      // first imported via some other batch; we keep that history.
       custom_fields: Object.keys(mergedCustom).length > 0 ? mergedCustom : null,
     }).eq("id", existing.id);
     if (uErr) return { ok: false as const, error: uErr.message };
@@ -73,6 +94,7 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
     title: input.title?.trim() || null,
     linkedin_url: input.linkedin_url?.trim() || null,
     source: input.source ?? "manual",
+    import_batch_id: input.import_batch_id ?? null,
     custom_fields: Object.keys(custom_fields).length > 0 ? custom_fields : null,
   }).select("id").single();
   if (error) return { ok: false as const, error: error.message };
@@ -80,13 +102,31 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
   return { ok: true as const, contact_id: contact.id, was_existing: false };
 }
 
-/** Bulk import contact rows. Same batch_label applied to every row.
- * Returns the contact_ids of every successfully inserted/updated contact
- * so the caller can immediately generate drafts for them. */
-export async function bulkImportContacts(rows: AddContactInput[], batch_label?: string) {
+/** Bulk import contact rows. Creates an import_batches row and tags every
+ * contact with its id, so the Approve queue can filter by batch later.
+ * Returns the contact_ids of every successfully inserted/updated contact. */
+export async function bulkImportContacts(
+  rows: AddContactInput[],
+  batch_label?: string,
+  opts: { file_name?: string } = {}
+) {
   let imported = 0, updated = 0, failed = 0;
   const sampleErrors: string[] = [];
   const contactIds: string[] = [];
+
+  // Create the batch up front. Label defaults to "CSV · 2026-05-25 14:32"
+  // if caller didn't provide one.
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+  const batchName = batch_label?.trim() || `CSV · ${stamp}`;
+  let batchId: string | undefined;
+  try {
+    batchId = await createImportBatch({
+      name: batchName, source: "csv", file_name: opts.file_name,
+    });
+  } catch (e) {
+    // Non-fatal — fall back to a null batch so import still works
+    console.warn("createImportBatch failed, proceeding without batch tag:", e);
+  }
 
   for (const r of rows) {
     if (!r.email || !r.first_name) {
@@ -95,7 +135,7 @@ export async function bulkImportContacts(rows: AddContactInput[], batch_label?: 
       continue;
     }
     const result = await addContact(
-      { ...r, batch_label, source: "csv-upload" },
+      { ...r, batch_label, source: "csv-upload", import_batch_id: batchId },
       { skipRevalidate: true }
     );
     if (result.ok) {
@@ -109,24 +149,18 @@ export async function bulkImportContacts(rows: AddContactInput[], batch_label?: 
   revalidatePath("/contacts");
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, imported, updated, failed, sample_errors: sampleErrors, contact_ids: contactIds };
+  return { ok: true, imported, updated, failed, sample_errors: sampleErrors, contact_ids: contactIds, batch_id: batchId };
 }
 
-/** Distinct batch labels for filtering UI. */
-export async function listBatches(): Promise<{ label: string; count: number }[]> {
+/** List all import batches (for the Approve queue filter UI). */
+export async function listBatches(): Promise<{
+  id: string; name: string; source: string; contact_count: number; created_at: string;
+}[]> {
   const sb = createAdminClient();
-  const { data } = await sb.from("contacts").select("custom_fields");
-  const counts = new Map<string, number>();
-  for (const c of data ?? []) {
-    const cf = c.custom_fields as Record<string, unknown> | null;
-    const label = cf?.batch_label;
-    if (typeof label === "string" && label.length > 0) {
-      counts.set(label, (counts.get(label) ?? 0) + 1);
-    }
-  }
-  return Array.from(counts.entries())
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => b.count - a.count);
+  const { data } = await sb.from("import_batches")
+    .select("id, name, source, contact_count, created_at")
+    .order("created_at", { ascending: false });
+  return (data ?? []) as any[];
 }
 
 export async function updateContact(

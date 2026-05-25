@@ -146,6 +146,22 @@ export async function addDiscoveredToContacts(opts: {
   let imported = 0, updated = 0, failed = 0;
   const contactIds: string[] = [];
 
+  // Create an import_batches row so this discovery shows up as a filterable
+  // batch on the Approve queue (e.g. "Discover · Wealth Mgmt 2026-05-25").
+  let batchId: string | undefined;
+  try {
+    const { data: b } = await sb.from("import_batches").insert({
+      name: opts.batchLabel.trim(),
+      source: "discover",
+      notes: `${opts.people.length} candidates from providers: ${
+        [...new Set(opts.people.flatMap(p => p.providers))].join(", ")
+      }`,
+    }).select("id").single();
+    batchId = b?.id;
+  } catch (e) {
+    console.warn("import_batches insert failed for discover:", e);
+  }
+
   for (const p of opts.people) {
     const email = (p.email ?? "").toLowerCase().trim();
     if (!email || !email.includes("@") || !p.first_name) { failed++; continue; }
@@ -190,6 +206,7 @@ export async function addDiscoveredToContacts(opts: {
         first_name: p.first_name, last_name: p.last_name || null,
         email, company_id, title: p.title, linkedin_url: p.linkedin_url,
         source: p.providers.join("+") || "discover",
+        import_batch_id: batchId ?? null,
         custom_fields: cf, email_status: emailStatus,
       }).select("id").single();
       if (error || !created) failed++;

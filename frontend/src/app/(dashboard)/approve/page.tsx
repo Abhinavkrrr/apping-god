@@ -5,6 +5,7 @@ import { ApprovalList } from "@/components/approve/approval-list";
 import { DispatchBar } from "@/components/approve/dispatch-bar";
 import { PipelineStats } from "@/components/approve/pipeline-stats";
 import { listActiveCampaignTemplates } from "@/app/actions/send";
+import { listBatches } from "@/app/actions/contacts";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -13,17 +14,21 @@ interface DraftRow {
   id: string;
   rendered_subject: string | null;
   campaigns: { name: string } | null;
-  contacts: { email: string; first_name: string; last_name: string | null; companies: { name: string } | null } | null;
+  contacts: {
+    email: string; first_name: string; last_name: string | null;
+    import_batch_id: string | null;
+    companies: { name: string } | null;
+  } | null;
 }
 
 async function loadData() {
   const sb = createAdminClient();
 
-  const [{ data, count }, campaigns, totalContactsRes, sendsByStatus] = await Promise.all([
+  const [{ data, count }, campaigns, totalContactsRes, sendsByStatus, batches] = await Promise.all([
     sb.from("sends").select(`
       id, rendered_subject,
       campaigns(name),
-      contacts(email, first_name, last_name, companies(name))
+      contacts(email, first_name, last_name, import_batch_id, companies(name))
     `, { count: "exact" })
       .eq("status", "pending_approval")
       .order("created_at", { ascending: false })
@@ -32,6 +37,7 @@ async function loadData() {
     sb.from("contacts").select("id", { count: "exact", head: true })
       .is("unsubscribed_at", null).is("skip_reason", null),
     sb.from("sends").select("status, contact_id"),
+    listBatches(),
   ]);
 
   const drafts = ((data ?? []) as unknown as DraftRow[]).map(d => ({
@@ -42,6 +48,7 @@ async function loadData() {
     contact_name: [d.contacts?.first_name, d.contacts?.last_name].filter(Boolean).join(" ") || "—",
     company_name: d.contacts?.companies?.name ?? "—",
     campaign_name: d.campaigns?.name ?? "—",
+    import_batch_id: d.contacts?.import_batch_id ?? null,
   }));
 
   const totalContacts = totalContactsRes.count ?? 0;
@@ -60,11 +67,11 @@ async function loadData() {
     not_yet_drafted: Math.max(0, totalContacts - touchedContactIds.size),
   };
 
-  return { drafts, total: count ?? 0, campaigns, stats };
+  return { drafts, total: count ?? 0, campaigns, stats, batches };
 }
 
 export default async function ApprovePage() {
-  const { drafts, total, campaigns, stats } = await loadData();
+  const { drafts, total, campaigns, stats, batches } = await loadData();
 
   return (
     <div className="space-y-6">
@@ -97,7 +104,7 @@ export default async function ApprovePage() {
           </CardHeader>
         </Card>
       ) : (
-        <ApprovalList drafts={drafts} />
+        <ApprovalList drafts={drafts} batches={batches} />
       )}
     </div>
   );
