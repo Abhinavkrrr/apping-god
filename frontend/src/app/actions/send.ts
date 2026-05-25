@@ -37,11 +37,18 @@ export async function getMasterTemplate(campaignName?: string) {
     .select("id").is("unsubscribed_at", null).is("skip_reason", null);
   const totalContacts = allContacts?.length ?? 0;
 
-  const { data: touched } = await sb.from("sends").select("contact_id")
+  // Per-campaign touched (old definition — used when opt-in cross-campaign is on)
+  const { data: touchedThis } = await sb.from("sends").select("contact_id")
     .eq("campaign_id", campaign.id)
     .in("status", ["pending_approval", "approved", "sending", "sent"]);
-  const touchedSet = new Set((touched ?? []).map((t: any) => t.contact_id));
-  const eligible = (allContacts ?? []).filter(c => !touchedSet.has(c.id)).length;
+  const touchedThisSet = new Set((touchedThis ?? []).map((t: any) => t.contact_id));
+  const eligibleSameCampaign = (allContacts ?? []).filter(c => !touchedThisSet.has(c.id)).length;
+
+  // Globally touched (default behavior — won't pitch someone who's in ANY other campaign)
+  const { data: touchedAny } = await sb.from("sends").select("contact_id")
+    .in("status", ["pending_approval", "approved", "sending", "sent"]);
+  const touchedAnySet = new Set((touchedAny ?? []).map((t: any) => t.contact_id));
+  const eligibleGlobal = (allContacts ?? []).filter(c => !touchedAnySet.has(c.id)).length;
 
   return {
     template_id: tpl.id,
@@ -51,7 +58,9 @@ export async function getMasterTemplate(campaignName?: string) {
     subject_tmpl: tpl.subject_tmpl as string,
     body_tmpl: tpl.body_tmpl as string,
     total_contacts: totalContacts,
-    eligible_contacts: eligible,
+    eligible_contacts: eligibleGlobal,            // default = global dedup
+    eligible_contacts_same_campaign: eligibleSameCampaign,  // when allowMultiCampaign is on
+    cross_campaign_collisions: eligibleSameCampaign - eligibleGlobal,
   };
 }
 
@@ -115,7 +124,11 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 // ============================================================
 // GENERATE drafts for a SPECIFIC set of contact IDs (post-import flow)
 // ============================================================
-export async function generateDraftsForContacts(contactIds: string[], campaignName?: string) {
+export async function generateDraftsForContacts(
+  contactIds: string[],
+  campaignName?: string,
+  opts: { allowMultiCampaign?: boolean } = {}
+) {
   const sb = createAdminClient();
   if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
 
@@ -129,11 +142,15 @@ export async function generateDraftsForContacts(contactIds: string[], campaignNa
   if (!seq?.templates) return { ok: false, error: "Master template not found." };
   const template = (seq as any).templates;
 
-  // Dedupe against existing drafts/sends
-  const { data: existing } = await sb.from("sends").select("contact_id")
-    .eq("campaign_id", campaign.id)
+  // GLOBAL dedup by default: skip any contact who already has a draft/send in
+  // ANY active campaign. Caller can opt-in to per-campaign dedup (the old
+  // behavior) by passing allowMultiCampaign: true — e.g. when intentionally
+  // pitching the same contact across campaigns.
+  const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"])
     .in("contact_id", contactIds);
+  if (opts.allowMultiCampaign) dedupQuery.eq("campaign_id", campaign.id);
+  const { data: existing } = await dedupQuery;
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
 
   const eligibleIds = contactIds.filter(id => !touched.has(id));
@@ -193,7 +210,8 @@ export async function generateDrafts(opts: {
   overrideBody?: string;
   useLlm?: boolean;
   startFresh?: boolean;
-  campaignName?: string;   // which campaign's template to use (default: Outreach)
+  campaignName?: string;       // which campaign's template to use (default: Outreach)
+  allowMultiCampaign?: boolean;// opt-in: pitch contacts who already have a draft/send in OTHER campaigns
 }) {
   const sb = createAdminClient();
   const useLlm = opts.useLlm ?? false;
@@ -258,10 +276,15 @@ export async function generateDrafts(opts: {
     return { ok: false, error: "No eligible contacts." };
   }
 
-  // Dedupe vs existing
-  const { data: existing } = await sb.from("sends").select("contact_id")
-    .eq("campaign_id", campaign.id)
+  // GLOBAL dedup by default: skip any contact already touched in ANY active
+  // campaign. Without this, generating SaaS Sales after Outreach would create
+  // duplicate drafts and recipients would get two different cold pitches
+  // from the same sender. Opt-in to per-campaign dedup (old behavior) via
+  // opts.allowMultiCampaign — use when intentionally cross-pitching.
+  const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"]);
+  if (opts.allowMultiCampaign) dedupQuery.eq("campaign_id", campaign.id);
+  const { data: existing } = await dedupQuery;
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
   const pool = (contacts as any[]).filter(c => !touched.has(c.id));
 

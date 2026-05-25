@@ -23,7 +23,9 @@ export interface CampaignTemplate {
   campaign_name: string;
   subject_tmpl: string;
   body_tmpl: string;
-  eligible_contacts: number;
+  eligible_contacts: number;                  // global (default)
+  eligible_contacts_same_campaign?: number;   // when allowMultiCampaign is on
+  cross_campaign_collisions?: number;         // contacts skipped by default that opt-in would unlock
   total_contacts: number;
 }
 
@@ -45,6 +47,7 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
   const [body, setBody] = useState(active?.body_tmpl ?? "");
   const [useLlm, setUseLlm] = useState(false);
   const [startFresh, setStartFresh] = useState(false);
+  const [allowMultiCampaign, setAllowMultiCampaign] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [busy, setBusy] = useState<"save" | "generate" | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -70,7 +73,14 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
 
   const renderedSubject = renderTemplate(subject, SAMPLE_CTX);
   const renderedBody = renderTemplate(body, SAMPLE_CTX);
-  const targetCount = startFresh ? active.total_contacts : active.eligible_contacts;
+  // Eligibility math depends on the cross-campaign toggle:
+  //   - default (global dedup): active.eligible_contacts
+  //   - opt-in (per-campaign):  active.eligible_contacts_same_campaign
+  const eligibleNow = allowMultiCampaign
+    ? (active.eligible_contacts_same_campaign ?? active.eligible_contacts)
+    : active.eligible_contacts;
+  const targetCount = startFresh ? active.total_contacts : eligibleNow;
+  const collisions = active.cross_campaign_collisions ?? 0;
   const isDirty = subject !== active.subject_tmpl || body !== active.body_tmpl;
 
   function insertVar(token: string) {
@@ -112,7 +122,7 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
       const r = await generateDrafts({
         overrideSubject: isDirty ? subject : undefined,
         overrideBody: isDirty ? body : undefined,
-        useLlm, startFresh,
+        useLlm, startFresh, allowMultiCampaign,
         campaignName: active.campaign_name,
       });
       setBusy(null);
@@ -178,8 +188,13 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
               {targetCount} draft{targetCount === 1 ? "" : "s"} will be created in <strong className="ml-1">{active.campaign_name}</strong>
               {startFresh
                 ? ` (replacing existing pending drafts)`
-                : ` (${active.total_contacts - active.eligible_contacts} contacts already drafted, skipped)`}
+                : ` (${active.total_contacts - eligibleNow} contacts already drafted, skipped)`}
             </Badge>
+            {!allowMultiCampaign && collisions > 0 && (
+              <Badge variant="warning" title="These contacts already have drafts/sends in another campaign. Tick 'Allow cross-campaign' below to include them.">
+                +{collisions} skipped (in other campaigns)
+              </Badge>
+            )}
             {isDirty && <Badge variant="warning">Unsaved edits</Badge>}
           </div>
 
@@ -214,6 +229,10 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={startFresh} onChange={(e) => setStartFresh(e.target.checked)} className="h-3.5 w-3.5" />
               Start fresh (delete existing pending drafts first)
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer" title="By default we skip contacts already touched by ANY other campaign so the same person doesn't get two different cold pitches. Tick this to override.">
+              <input type="checkbox" checked={allowMultiCampaign} onChange={(e) => setAllowMultiCampaign(e.target.checked)} className="h-3.5 w-3.5" />
+              <span className="text-amber-700">Allow cross-campaign (pitch contacts already in other campaigns)</span>
             </label>
             <button type="button" onClick={() => setShowPreview(!showPreview)} className="text-blue-600 hover:underline">
               <Eye className="h-3 w-3 inline mr-1" /> {showPreview ? "Hide" : "Show"} preview
