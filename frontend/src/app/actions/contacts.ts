@@ -163,6 +163,75 @@ export async function listBatches(): Promise<{
   return (data ?? []) as any[];
 }
 
+/** Preview before delete: returns counts of contacts + their sends so the
+ * UI can show "Delete X contacts + their Y drafts/Z sent?" in the confirm. */
+export async function previewBatchDelete(batchId: string): Promise<{
+  ok: boolean;
+  batch_name?: string;
+  contacts?: number;
+  pending_drafts?: number;
+  scheduled?: number;
+  sent?: number;
+  error?: string;
+}> {
+  const sb = createAdminClient();
+  const { data: batch } = await sb.from("import_batches")
+    .select("name").eq("id", batchId).maybeSingle();
+  if (!batch) return { ok: false, error: "Batch not found." };
+
+  const { data: contacts } = await sb.from("contacts")
+    .select("id").eq("import_batch_id", batchId);
+  const contactIds = (contacts ?? []).map((c: any) => c.id);
+
+  if (contactIds.length === 0) {
+    return { ok: true, batch_name: batch.name, contacts: 0,
+      pending_drafts: 0, scheduled: 0, sent: 0 };
+  }
+
+  const { data: sends } = await sb.from("sends")
+    .select("status").in("contact_id", contactIds);
+  const counts = (sends ?? []).reduce<Record<string, number>>((acc, s: any) => {
+    acc[s.status] = (acc[s.status] ?? 0) + 1; return acc;
+  }, {});
+
+  return {
+    ok: true,
+    batch_name: batch.name,
+    contacts: contactIds.length,
+    pending_drafts: counts["pending_approval"] ?? 0,
+    scheduled: counts["approved"] ?? 0,
+    sent: counts["sent"] ?? 0,
+  };
+}
+
+/** Hard-delete an import batch: removes every contact tagged with this
+ * batch_id, which cascades to sends → approvals/events/replies, then
+ * deletes the import_batches row itself. */
+export async function deleteBatch(batchId: string): Promise<{
+  ok: boolean; deleted_contacts?: number; error?: string;
+}> {
+  const sb = createAdminClient();
+  const { data: batch } = await sb.from("import_batches")
+    .select("name").eq("id", batchId).maybeSingle();
+  if (!batch) return { ok: false, error: "Batch not found." };
+
+  // sends → cascade-deletes approvals/events/replies via FK
+  // contacts → cascade-deletes sends via FK
+  const { data: deleted, error: dErr } = await sb.from("contacts")
+    .delete().eq("import_batch_id", batchId).select("id");
+  if (dErr) return { ok: false, error: `delete contacts: ${dErr.message}` };
+
+  // Now drop the batch row itself
+  const { error: bErr } = await sb.from("import_batches").delete().eq("id", batchId);
+  if (bErr) return { ok: false, error: `delete batch: ${bErr.message}` };
+
+  revalidatePath("/contacts");
+  revalidatePath("/approve");
+  revalidatePath("/scheduled");
+  revalidatePath("/");
+  return { ok: true, deleted_contacts: deleted?.length ?? 0 };
+}
+
 export async function updateContact(
   contactId: string,
   patch: {

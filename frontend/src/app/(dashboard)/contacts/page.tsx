@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { AddContactModal } from "@/components/contacts/add-contact-modal";
 import { CsvUploadModal } from "@/components/contacts/csv-upload-modal";
 import { ContactActions } from "@/components/contacts/contact-actions";
+import { BatchChips } from "@/components/contacts/batch-chips";
 import { listBatches } from "@/app/actions/contacts";
 
 export const dynamic = "force-dynamic";
@@ -20,14 +21,16 @@ interface ContactRow {
   title: string | null;
   source: string | null;
   unsubscribed_at: string | null;
+  import_batch_id: string | null;
   custom_fields: Record<string, unknown> | null;
   companies: { name: string } | null;
+  import_batches: { name: string } | null;
 }
 
 async function loadContacts(batchFilter?: string) {
   const sb = createAdminClient();
   let q = sb.from("contacts").select(
-    "id, first_name, last_name, email, email_status, title, source, unsubscribed_at, custom_fields, companies(name)",
+    "id, first_name, last_name, email, email_status, title, source, unsubscribed_at, import_batch_id, custom_fields, companies(name), import_batches(name)",
     { count: "exact" }
   ).order("created_at", { ascending: false }).limit(300);
 
@@ -100,31 +103,20 @@ export default async function ContactsPage({
       {batches.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium">Filter by batch</CardTitle>
+            <CardTitle className="text-sm font-medium">Filter by import batch</CardTitle>
             <CardDescription className="text-xs">
-              Each CSV import is tagged with a batch name so you can manage them separately.
+              Each CSV import / Discover run / Quick Add is its own batch. Click a chip to filter,
+              or the trash icon to delete an entire batch (contacts + every related send).
+              "Legacy" and "Quick Add" buckets are protected from bulk delete.
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-0">
-            <div className="flex flex-wrap gap-2">
-              <Link href="/contacts?batch=__all__">
-                <Badge variant={batchFilter === "__all__" ? "info" : "default"} className="cursor-pointer">
-                  All ({total})
-                </Badge>
-              </Link>
-              {batches.map(b => (
-                <Link key={b.id} href={`/contacts?batch=${encodeURIComponent(b.id)}`}>
-                  <Badge variant={batchFilter === b.id ? "info" : "default"} className="cursor-pointer">
-                    {b.name} ({b.contact_count})
-                  </Badge>
-                </Link>
-              ))}
-              <Link href="/contacts?batch=__none__">
-                <Badge variant={batchFilter === "__none__" ? "info" : "default"} className="cursor-pointer">
-                  No batch ({contacts.length})
-                </Badge>
-              </Link>
-            </div>
+            <BatchChips
+              batches={batches}
+              activeId={batchFilter}
+              totalContacts={total}
+              noBatchCount={contacts.filter(c => !c.import_batch_id).length}
+            />
           </CardContent>
         </Card>
       )}
@@ -158,7 +150,9 @@ export default async function ContactsPage({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {contacts.map((c) => {
-                  const batchLabel = (c.custom_fields?.batch_label as string | undefined) ?? null;
+                  const batchName = c.import_batches?.name
+                    ?? (c.custom_fields?.batch_label as string | undefined)
+                    ?? null;
                   return (
                     <tr key={c.id} className="hover:bg-slate-50">
                       <td className="px-4 py-2.5 font-medium text-slate-900">
@@ -169,7 +163,7 @@ export default async function ContactsPage({
                         {c.companies?.name ?? <span className="text-slate-400">—</span>}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-slate-500">
-                        {batchLabel ? <Badge variant="default">{batchLabel}</Badge> : <span className="text-slate-400">—</span>}
+                        {batchName ? <Badge variant="default">{batchName}</Badge> : <span className="text-slate-400">—</span>}
                       </td>
                       <td className="px-4 py-2.5"><StatusBadge status={c.email_status} /></td>
                       <td className="px-4 py-2.5 text-right">
