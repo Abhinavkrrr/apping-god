@@ -29,7 +29,7 @@ Two things I think would pay back the first week:
 • **AI Sales Agent** — qualifies inbound leads from your website/inbox 24×7, books meetings into your calendar, learns your ICP in 1 day.
 • **AI Support Agent** — auto-resolves **60–70%** of repetitive tickets after training on your help docs in <24 hours.
 
-A comparable team I shipped this for saw response time drop from **8 hours → 4 minutes**, and effectively replaced one SDR seat in the first month.
+A comparable team I shipped this for cut response time from **8 hours → 4 minutes** — their support team stopped drowning in tier-1 tickets, and their sales reps stopped spending half their week hunting for leads.
 
 Open to a **2-minute Loom** showing exactly what we'd build for {{company}}? No pitch deck — just the actual product walking through your use case.
 
