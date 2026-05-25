@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ApprovalList } from "@/components/approve/approval-list";
 import { DispatchBar } from "@/components/approve/dispatch-bar";
 import { PipelineStats } from "@/components/approve/pipeline-stats";
-import { getMasterTemplate } from "@/app/actions/send";
+import { listActiveCampaignTemplates } from "@/app/actions/send";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -19,9 +19,7 @@ interface DraftRow {
 async function loadData() {
   const sb = createAdminClient();
 
-  const [{ data, count }, master, totalContactsRes, sendsByStatus] = await Promise.all([
-    // PERF: rendered_body intentionally omitted (~1-2KB/row × N). Lazy-loaded
-    // via loadDraftBody() on Preview click. Cuts initial payload massively.
+  const [{ data, count }, campaigns, totalContactsRes, sendsByStatus] = await Promise.all([
     sb.from("sends").select(`
       id, rendered_subject,
       campaigns(name),
@@ -30,7 +28,7 @@ async function loadData() {
       .eq("status", "pending_approval")
       .order("created_at", { ascending: false })
       .limit(1000),
-    getMasterTemplate(),
+    listActiveCampaignTemplates(),
     sb.from("contacts").select("id", { count: "exact", head: true })
       .is("unsubscribed_at", null).is("skip_reason", null),
     sb.from("sends").select("status, contact_id"),
@@ -39,14 +37,13 @@ async function loadData() {
   const drafts = ((data ?? []) as unknown as DraftRow[]).map(d => ({
     id: d.id,
     rendered_subject: d.rendered_subject ?? "",
-    rendered_body: "",  // lazy-loaded on Preview click
+    rendered_body: "",
     contact_email: d.contacts?.email ?? "",
     contact_name: [d.contacts?.first_name, d.contacts?.last_name].filter(Boolean).join(" ") || "—",
     company_name: d.contacts?.companies?.name ?? "—",
     campaign_name: d.campaigns?.name ?? "—",
   }));
 
-  // Build per-status counts + distinct touched contacts
   const totalContacts = totalContactsRes.count ?? 0;
   const statusCounts: Record<string, number> = {};
   const touchedContactIds = new Set<string>();
@@ -63,11 +60,11 @@ async function loadData() {
     not_yet_drafted: Math.max(0, totalContacts - touchedContactIds.size),
   };
 
-  return { drafts, total: count ?? 0, master, stats };
+  return { drafts, total: count ?? 0, campaigns, stats };
 }
 
 export default async function ApprovePage() {
-  const { drafts, total, master, stats } = await loadData();
+  const { drafts, total, campaigns, stats } = await loadData();
 
   return (
     <div className="space-y-6">
@@ -75,22 +72,27 @@ export default async function ApprovePage() {
         <h1 className="text-2xl font-semibold tracking-tight">Approval queue</h1>
         <p className="text-sm text-slate-500 mt-1">
           <Badge variant={drafts.length > 0 ? "info" : "default"} className="mr-2">{total} pending review</Badge>
-          Pipeline at a glance below. Click <strong>Generate drafts</strong> to draft anyone not yet drafted.
+          {campaigns.length > 1 && (
+            <Badge variant="success" className="mr-2">{campaigns.length} campaigns</Badge>
+          )}
+          Pipeline at a glance below. Click <strong>Generate drafts</strong> and pick a campaign.
         </p>
       </div>
 
       <PipelineStats stats={stats} />
 
-      <DispatchBar pendingCount={total} master={master} />
+      <DispatchBar pendingCount={total} campaigns={campaigns} />
 
       {drafts.length === 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>Queue empty</CardTitle>
             <CardDescription>
-              {master
-                ? `${master.eligible_contacts} of ${master.total_contacts} contacts are ready to draft. Click Generate above.`
-                : "Add contacts and templates first."}
+              {campaigns.length === 0
+                ? "No active campaigns. Add templates first."
+                : campaigns
+                    .map(c => `${c.eligible_contacts} eligible for ${c.campaign_name}`)
+                    .join(" · ") + ". Click Generate above."}
             </CardDescription>
           </CardHeader>
         </Card>

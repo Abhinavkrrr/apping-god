@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,41 +17,61 @@ import { generateDrafts, saveMasterTemplate } from "@/app/actions/send";
 
 const VARS = ["{{first_name}}", "{{company}}", "{{company_brief_one_line}}", "{{full_name}}", "{{title}}"];
 
+export interface CampaignTemplate {
+  template_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  subject_tmpl: string;
+  body_tmpl: string;
+  eligible_contacts: number;
+  total_contacts: number;
+}
+
 interface Props {
-  initial: {
-    template_id: string;
-    subject_tmpl: string;
-    body_tmpl: string;
-    eligible_contacts: number;
-    total_contacts: number;
-  };
+  campaigns: CampaignTemplate[];   // active campaigns + their first-touch templates
   mode?: "edit" | "generate";
 }
 
-export function GenerateModal({ initial, mode = "generate" }: Props) {
+export function GenerateModal({ campaigns, mode = "generate" }: Props) {
   const [open, setOpen] = useState(false);
-  const [subject, setSubject] = useState(initial.subject_tmpl);
-  const [body, setBody] = useState(initial.body_tmpl);
+  const [campaignName, setCampaignName] = useState(campaigns[0]?.campaign_name ?? "");
+
+  const active = useMemo(
+    () => campaigns.find(c => c.campaign_name === campaignName) ?? campaigns[0] ?? null,
+    [campaigns, campaignName]
+  );
+
+  const [subject, setSubject] = useState(active?.subject_tmpl ?? "");
+  const [body, setBody] = useState(active?.body_tmpl ?? "");
   const [useLlm, setUseLlm] = useState(false);
   const [startFresh, setStartFresh] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [busy, setBusy] = useState<"save" | "generate" | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // When modal opens, re-sync state with the latest server-side initial
-  // (so edits made on Templates page show up here).
   function handleOpenChange(next: boolean) {
-    if (next) {
-      setSubject(initial.subject_tmpl);
-      setBody(initial.body_tmpl);
+    if (next && active) {
+      setSubject(active.subject_tmpl);
+      setBody(active.body_tmpl);
     }
     setOpen(next);
   }
 
+  // When campaign selection changes, swap to its template
+  function pickCampaign(name: string) {
+    setCampaignName(name);
+    const c = campaigns.find(x => x.campaign_name === name);
+    if (c) { setSubject(c.subject_tmpl); setBody(c.body_tmpl); }
+  }
+
+  if (!active) {
+    return null; // no active campaign — nothing to do
+  }
+
   const renderedSubject = renderTemplate(subject, SAMPLE_CTX);
   const renderedBody = renderTemplate(body, SAMPLE_CTX);
-  const targetCount = startFresh ? initial.total_contacts : initial.eligible_contacts;
-  const isDirty = subject !== initial.subject_tmpl || body !== initial.body_tmpl;
+  const targetCount = startFresh ? active.total_contacts : active.eligible_contacts;
+  const isDirty = subject !== active.subject_tmpl || body !== active.body_tmpl;
 
   function insertVar(token: string) {
     const ta = document.getElementById("master-body") as HTMLTextAreaElement | null;
@@ -63,38 +83,41 @@ export function GenerateModal({ initial, mode = "generate" }: Props) {
   }
 
   function handleSaveOnly() {
+    if (!active) return;
     if (!isDirty) { toast.info("No changes to save."); return; }
     setBusy("save");
     startTransition(async () => {
-      const r = await saveMasterTemplate(initial.template_id, subject, body);
+      const r = await saveMasterTemplate(active.template_id, subject, body);
       setBusy(null);
       if (r.ok) {
-        toast.success("✓ Template saved.");
+        toast.success(`✓ Template saved (${active.campaign_name}).`);
         setOpen(false);
       } else toast.error(r.error ?? "Save failed.");
     });
   }
 
   function handleGenerate() {
+    if (!active) return;
     if (targetCount === 0) { toast.error("No eligible contacts."); return; }
     const llmWarning = useLlm
       ? `\n\nGemini personalization adds ~2s per contact (~${Math.ceil(targetCount * 2 / 60)} min total).`
       : "";
-    if (!confirm(`This will create ${targetCount} draft email(s) using the template you just edited.${llmWarning}\n\nProceed?`)) return;
+    if (!confirm(`Create ${targetCount} draft email(s) for campaign "${active.campaign_name}" using the template below?${llmWarning}\n\nProceed?`)) return;
 
     setBusy("generate");
     startTransition(async () => {
       toast.info(useLlm
-        ? `Generating ${targetCount} personalized drafts... could take ${Math.ceil(targetCount * 2 / 60)} min.`
-        : `Generating ${targetCount} drafts... please wait.`);
+        ? `Generating ${targetCount} personalized drafts for ${active.campaign_name}…`
+        : `Generating ${targetCount} drafts for ${active.campaign_name}…`);
       const r = await generateDrafts({
         overrideSubject: isDirty ? subject : undefined,
         overrideBody: isDirty ? body : undefined,
         useLlm, startFresh,
+        campaignName: active.campaign_name,
       });
       setBusy(null);
       if (r.ok) {
-        toast.success(`✓ Created ${r.created} draft${r.created === 1 ? "" : "s"}.`);
+        toast.success(`✓ Created ${r.created} draft${r.created === 1 ? "" : "s"} in ${active.campaign_name}.`);
         setOpen(false);
       } else {
         toast.error(r.error ?? "Failed.");
@@ -119,20 +142,47 @@ export function GenerateModal({ initial, mode = "generate" }: Props) {
         <DialogHeader>
           <DialogTitle>Master email template</DialogTitle>
           <DialogDescription>
-            Edit the subject and body below. Click <strong>Save</strong> to just save edits, or
-            <strong> Generate</strong> to save and create one draft per contact.
-            <br />
-            <Badge variant="info" className="mt-2">
-              {targetCount} draft{targetCount === 1 ? "" : "s"} will be created
-              {startFresh
-                ? ` (replacing all existing pending drafts)`
-                : ` (${initial.total_contacts - initial.eligible_contacts} contacts already drafted, skipped)`}
-            </Badge>
-            {isDirty && <Badge variant="warning" className="ml-2 mt-2">Unsaved edits</Badge>}
+            Pick which campaign template to edit / generate from. Each campaign
+            has its own template (e.g. internship outreach vs SaaS sales pitch).
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
+          {campaigns.length > 1 && (
+            <div className="flex items-center gap-2 flex-wrap p-3 bg-violet-50 rounded-md border border-violet-200">
+              <Label className="text-xs font-semibold uppercase tracking-wide text-violet-700">
+                Campaign:
+              </Label>
+              {campaigns.map(c => (
+                <button
+                  key={c.campaign_name}
+                  type="button"
+                  onClick={() => pickCampaign(c.campaign_name)}
+                  className={`text-xs px-3 py-1.5 rounded-md border font-medium transition-colors ${
+                    c.campaign_name === active.campaign_name
+                      ? "bg-violet-600 text-white border-violet-600"
+                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  {c.campaign_name}
+                  <span className="ml-1.5 opacity-70 text-[10px]">
+                    ({c.eligible_contacts} eligible)
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="info">
+              {targetCount} draft{targetCount === 1 ? "" : "s"} will be created in <strong className="ml-1">{active.campaign_name}</strong>
+              {startFresh
+                ? ` (replacing existing pending drafts)`
+                : ` (${active.total_contacts - active.eligible_contacts} contacts already drafted, skipped)`}
+            </Badge>
+            {isDirty && <Badge variant="warning">Unsaved edits</Badge>}
+          </div>
+
           <div>
             <Label htmlFor="master-subject">Subject</Label>
             <Input id="master-subject" value={subject} onChange={(e) => setSubject(e.target.value)} className="mt-1" />

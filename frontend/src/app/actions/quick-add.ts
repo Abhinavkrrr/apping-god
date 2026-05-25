@@ -6,12 +6,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { addContact } from "@/app/actions/contacts";
 import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 
-const MASTER_CAMPAIGN_NAME = "Outreach";
+const DEFAULT_CAMPAIGN_NAME = "Outreach";
 
 /**
  * Adds a contact AND immediately creates a pending_approval draft for them,
- * using the master Outreach template. The draft lands straight in the
- * approval queue ready to send.
+ * using the SELECTED campaign's first-touch template (default: Outreach).
  */
 export async function addContactAndQueue(input: {
   first_name: string;
@@ -20,29 +19,27 @@ export async function addContactAndQueue(input: {
   company_name: string;
   company_brief?: string;
   title?: string;
+  campaignName?: string;
 }) {
   const sb = createAdminClient();
+  const cName = input.campaignName ?? DEFAULT_CAMPAIGN_NAME;
 
-  // Reject if the email is already on the unsubscribe list — don't queue
-  // a draft to someone who explicitly opted out.
   const lowerEmail = input.email.toLowerCase().trim();
-  const sbCheck = createAdminClient();
-  const { data: unsub } = await sbCheck.from("unsubscribes").select("email")
+  const { data: unsub } = await sb.from("unsubscribes").select("email")
     .eq("email", lowerEmail).maybeSingle();
   if (unsub) return { ok: false, error: `${input.email} previously unsubscribed.` };
 
-  // 1) Add contact (returns id)
   const addResult = await addContact({ ...input, source: "quick-add" });
   if (!addResult.ok) return { ok: false, error: addResult.error };
   const contactId = addResult.contact_id!;
 
-  // 2) Fetch master campaign + first-touch template
+  // Fetch the chosen campaign + first-touch template
   const { data: campaign } = await sb.from("campaigns").select("*")
-    .eq("name", MASTER_CAMPAIGN_NAME).single();
-  if (!campaign) return { ok: false, error: `Master campaign "${MASTER_CAMPAIGN_NAME}" not found.` };
+    .eq("name", cName).single();
+  if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
   const { data: seq } = await sb.from("sequences").select("*, templates(*)")
     .eq("campaign_id", campaign.id).eq("step_number", 0).single();
-  if (!seq?.templates) return { ok: false, error: "Master template not found." };
+  if (!seq?.templates) return { ok: false, error: `No first-touch template for "${cName}".` };
   const template = (seq as any).templates;
 
   // 3) Get the full contact + company we just inserted

@@ -7,7 +7,7 @@ import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 import { rewriteCompanyBrief } from "@/lib/send/llm";
 
 const FUNCTION_URL = `https://${process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0]}.functions.supabase.co/send-worker`;
-const MASTER_CAMPAIGN_NAME = "Outreach"; // single master campaign for all contacts
+const DEFAULT_CAMPAIGN_NAME = "Outreach"; // fallback when caller doesn't specify a campaign
 
 interface CompanyRow {
   id: string; name: string; domain: string | null;
@@ -16,12 +16,15 @@ interface CompanyRow {
 }
 
 // ============================================================
-// Get the master template (used for ALL contacts in the new flow)
+// Get the first-touch template for a SPECIFIC campaign (default: Outreach)
+// + counts of total contacts / eligible-to-draft for that campaign
 // ============================================================
-export async function getMasterTemplate() {
+export async function getMasterTemplate(campaignName?: string) {
   const sb = createAdminClient();
-  const { data: campaign } = await sb.from("campaigns").select("id, resume_id")
-    .eq("name", MASTER_CAMPAIGN_NAME).maybeSingle();
+  const name = campaignName ?? DEFAULT_CAMPAIGN_NAME;
+
+  const { data: campaign } = await sb.from("campaigns").select("id, name, resume_id")
+    .eq("name", name).maybeSingle();
   if (!campaign) return null;
 
   const { data: seq } = await sb.from("sequences").select("*, templates(*)")
@@ -30,7 +33,6 @@ export async function getMasterTemplate() {
   const tpl = (seq as any).templates;
   if (!tpl) return null;
 
-  // Count eligible contacts (not unsubscribed, not skipped, not already drafted in master campaign)
   const { data: allContacts } = await sb.from("contacts")
     .select("id").is("unsubscribed_at", null).is("skip_reason", null);
   const totalContacts = allContacts?.length ?? 0;
@@ -44,12 +46,27 @@ export async function getMasterTemplate() {
   return {
     template_id: tpl.id,
     campaign_id: campaign.id,
+    campaign_name: campaign.name as string,
     resume_id: campaign.resume_id,
     subject_tmpl: tpl.subject_tmpl as string,
     body_tmpl: tpl.body_tmpl as string,
     total_contacts: totalContacts,
     eligible_contacts: eligible,
   };
+}
+
+/** List every active campaign + its first-touch template & eligibility counts.
+ * Used by the Generate Modal to populate the campaign dropdown. */
+export async function listActiveCampaignTemplates() {
+  const sb = createAdminClient();
+  const { data: campaigns } = await sb.from("campaigns")
+    .select("name").eq("status", "active").order("name");
+  const out: NonNullable<Awaited<ReturnType<typeof getMasterTemplate>>>[] = [];
+  for (const c of campaigns ?? []) {
+    const m = await getMasterTemplate(c.name);
+    if (m) out.push(m);
+  }
+  return out;
 }
 
 // ============================================================
@@ -90,13 +107,14 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 // ============================================================
 // GENERATE drafts for a SPECIFIC set of contact IDs (post-import flow)
 // ============================================================
-export async function generateDraftsForContacts(contactIds: string[]) {
+export async function generateDraftsForContacts(contactIds: string[], campaignName?: string) {
   const sb = createAdminClient();
   if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
 
+  const cName = campaignName ?? DEFAULT_CAMPAIGN_NAME;
   const { data: campaign } = await sb.from("campaigns").select("*")
-    .eq("name", MASTER_CAMPAIGN_NAME).single();
-  if (!campaign) return { ok: false, error: `Master campaign "${MASTER_CAMPAIGN_NAME}" not found.` };
+    .eq("name", cName).single();
+  if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
 
   const { data: seq } = await sb.from("sequences").select("*, templates(*)")
     .eq("campaign_id", campaign.id).eq("step_number", 0).single();
@@ -157,15 +175,16 @@ export async function generateDrafts(opts: {
   overrideSubject?: string;
   overrideBody?: string;
   useLlm?: boolean;
-  startFresh?: boolean; // delete existing pending_approval drafts first
+  startFresh?: boolean;
+  campaignName?: string;   // which campaign's template to use (default: Outreach)
 }) {
   const sb = createAdminClient();
   const useLlm = opts.useLlm ?? false;
+  const cName = opts.campaignName ?? DEFAULT_CAMPAIGN_NAME;
 
-  // Get master campaign + template
   const { data: campaign } = await sb.from("campaigns").select("*")
-    .eq("name", MASTER_CAMPAIGN_NAME).single();
-  if (!campaign) return { ok: false, error: `Master campaign "${MASTER_CAMPAIGN_NAME}" not found.` };
+    .eq("name", cName).single();
+  if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
 
   const { data: seq } = await sb.from("sequences").select("*, templates(*)")
     .eq("campaign_id", campaign.id).eq("step_number", 0).single();

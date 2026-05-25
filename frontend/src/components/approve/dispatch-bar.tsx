@@ -5,22 +5,17 @@ import { Button } from "@/components/ui/button";
 import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { sendAllPendingNow } from "@/app/actions/send";
-import { GenerateModal } from "./generate-modal";
+import { GenerateModal, type CampaignTemplate } from "./generate-modal";
 import { QuickAddModal } from "./quick-add-modal";
 import { ScheduleDialog } from "./schedule-dialog";
 
-interface MasterTemplate {
-  template_id: string;
-  subject_tmpl: string;
-  body_tmpl: string;
-  eligible_contacts: number;
-  total_contacts: number;
-}
-
 export function DispatchBar({
   pendingCount,
-  master,
-}: { pendingCount: number; master: MasterTemplate | null }) {
+  campaigns,
+}: {
+  pendingCount: number;
+  campaigns: CampaignTemplate[];
+}) {
   const [busy, setBusy] = useState<"send" | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -38,24 +33,32 @@ export function DispatchBar({
   }
 
   const disabled = isPending || busy !== null;
+  const totalEligible = campaigns.reduce((s, c) => s + c.eligible_contacts, 0);
 
   return (
     <div className="bg-slate-900 text-white rounded-lg p-4 -mx-1 mb-4 space-y-3">
       <div>
-        <div className="font-semibold text-sm">Outreach controls</div>
+        <div className="font-semibold text-sm flex items-center gap-2">
+          Outreach controls
+          {campaigns.length > 1 && (
+            <span className="text-[10px] font-normal text-slate-300 bg-slate-800 px-2 py-0.5 rounded">
+              {campaigns.length} campaigns active
+            </span>
+          )}
+        </div>
         <div className="text-slate-300 text-xs mt-0.5">
           {pendingCount === 0
-            ? master
-              ? `No pending drafts. Click Generate to create one for each of your ${master.total_contacts} contacts.`
-              : "No master template found. Check Templates page."
+            ? campaigns.length === 0
+              ? "No active campaigns. Activate one in Campaigns settings."
+              : `No pending drafts. Click Generate to create drafts (${totalEligible} contacts eligible across ${campaigns.length} campaign${campaigns.length === 1 ? "" : "s"}).`
             : `${pendingCount} draft(s) ready. Send now or schedule for tomorrow morning.`}
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-700">
-        {master && <GenerateModal initial={master} mode="edit" />}
-        {master && <GenerateModal initial={master} mode="generate" />}
-        <QuickAddModal />
+        {campaigns.length > 0 && <GenerateModal campaigns={campaigns} mode="edit" />}
+        {campaigns.length > 0 && <GenerateModal campaigns={campaigns} mode="generate" />}
+        <QuickAddModal campaigns={campaigns} />
 
         <Button
           size="sm" onClick={handleSendNow} disabled={disabled || pendingCount === 0}

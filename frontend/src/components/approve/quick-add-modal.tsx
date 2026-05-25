@@ -12,9 +12,11 @@ import {
 import { UserPlus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { addContactAndQueue } from "@/app/actions/quick-add";
+import type { CampaignTemplate } from "./generate-modal";
 
-export function QuickAddModal() {
+export function QuickAddModal({ campaigns }: { campaigns: CampaignTemplate[] }) {
   const [open, setOpen] = useState(false);
+  const [campaignName, setCampaignName] = useState(campaigns[0]?.campaign_name ?? "");
   const [form, setForm] = useState({
     first_name: "", last_name: "", email: "",
     company_name: "", company_brief: "", title: "",
@@ -30,9 +32,9 @@ export function QuickAddModal() {
       toast.error("First name, email, and company are required."); return;
     }
     startTransition(async () => {
-      const r = await addContactAndQueue(form);
+      const r = await addContactAndQueue({ ...form, campaignName });
       if (r.ok) {
-        toast.success(`✓ Added ${form.email} → queued in Approve`);
+        toast.success(`✓ Added ${form.email} → queued in ${campaignName}`);
         setOpen(false);
         setForm({ first_name: "", last_name: "", email: "", company_name: "", company_brief: "", title: "" });
       } else toast.error(r.error ?? "Failed.");
@@ -51,9 +53,28 @@ export function QuickAddModal() {
           <DialogTitle>Add a single contact directly to the send queue</DialogTitle>
           <DialogDescription>
             Skips Contacts page — the contact is created AND a draft is generated using the
-            master template, ready in the approval queue.
+            selected campaign&apos;s template, ready in the approval queue.
           </DialogDescription>
         </DialogHeader>
+
+        {campaigns.length > 1 && (
+          <div>
+            <Label>Campaign</Label>
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              {campaigns.map(c => (
+                <button
+                  key={c.campaign_name} type="button"
+                  onClick={() => setCampaignName(c.campaign_name)}
+                  className={`text-xs px-3 py-1.5 rounded-md border font-medium transition-colors ${
+                    c.campaign_name === campaignName
+                      ? "bg-violet-600 text-white border-violet-600"
+                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                  }`}
+                >{c.campaign_name}</button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -79,10 +100,7 @@ export function QuickAddModal() {
           <div className="col-span-2">
             <Label>Company brief (used as {`{{company_brief_one_line}}`})</Label>
             <Textarea value={form.company_brief} onChange={(e) => setField("company_brief", e.target.value)}
-              rows={2} placeholder="I've been following Company X's work in..." className="mt-1 text-xs" />
-            <p className="text-[10px] text-slate-500 mt-1">
-              Leave blank and Gemini will fill it from the company name later (if you enable LLM on generate).
-            </p>
+              rows={2} placeholder="Building AI agents for B2B sales..." className="mt-1 text-xs" />
           </div>
         </div>
 
