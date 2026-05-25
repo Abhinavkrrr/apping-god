@@ -92,9 +92,14 @@ export function ApprovalList({
   const allChecked = selected.size === visibleDrafts.length && visibleDrafts.length > 0;
   const orphanCount = draftCountsByBatch.get("__none__") ?? 0;
 
-  // Show batch filter when there's more than one batch (otherwise it's noise)
-  const showBatchFilter = batches.length + (orphanCount > 0 ? 1 : 0) > 1;
-  const allBatchesOn = activeBatches.size === batches.length + (orphanCount > 0 ? 1 : 0);
+  // ALWAYS show the chip row whenever batches exist — including batches
+  // with zero pending drafts (so the user sees every CSV they've imported
+  // and can understand the structure of their pipeline).
+  const showBatchFilter = batches.length > 0;
+  const chipCount = batches.length + (orphanCount > 0 ? 1 : 0);
+  const allBatchesOn = activeBatches.size === chipCount;
+  const checkedBatchesCount = batches.filter(b => activeBatches.has(b.id)).length
+    + (orphanCount > 0 && activeBatches.has("__none__") ? 1 : 0);
 
   return (
     <>
@@ -102,59 +107,92 @@ export function ApprovalList({
       <div className="space-y-2">
         {showBatchFilter && (
           <div className="bg-violet-50 border border-violet-200 rounded-md p-3 space-y-2">
-            <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-violet-700 font-semibold">
-              <span>Import batch filter — click to toggle, double-click to isolate</span>
-              {!allBatchesOn && (
-                <button
-                  type="button" onClick={selectAllBatches}
-                  className="text-[10px] normal-case font-medium text-violet-700 underline hover:text-violet-900"
-                >
-                  Show all
-                </button>
-              )}
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="text-[11px] uppercase tracking-wide text-violet-700 font-semibold">
+                Import batches — uncheck to hide drafts from that file
+                <span className="ml-2 normal-case font-normal text-violet-600">
+                  ({checkedBatchesCount}/{chipCount} on · {visibleDrafts.length} of {drafts.length} drafts visible)
+                </span>
+              </div>
+              <div className="flex gap-2 text-[10px] font-medium">
+                {!allBatchesOn && (
+                  <button
+                    type="button" onClick={selectAllBatches}
+                    className="text-violet-700 underline hover:text-violet-900"
+                  >
+                    Check all
+                  </button>
+                )}
+                {allBatchesOn && batches.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => { setActiveBatches(new Set()); setSelected(new Set()); }}
+                    className="text-violet-700 underline hover:text-violet-900"
+                  >
+                    Uncheck all
+                  </button>
+                )}
+              </div>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {batches.map(b => {
                 const n = draftCountsByBatch.get(b.id) ?? 0;
                 const on = activeBatches.has(b.id);
-                if (n === 0 && allBatchesOn) return null; // hide batches with no pending drafts when nothing's been narrowed
+                const empty = n === 0;
                 return (
-                  <button
-                    key={b.id} type="button"
-                    onClick={() => toggleBatch(b.id)}
-                    onDoubleClick={() => selectOnlyBatch(b.id)}
-                    className={`text-xs px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                  <label
+                    key={b.id}
+                    className={`text-xs px-2.5 py-1 rounded-md border font-medium transition-colors inline-flex items-center gap-1.5 cursor-pointer ${
                       on
-                        ? "bg-violet-600 text-white border-violet-600"
+                        ? empty
+                          ? "bg-violet-100 text-violet-700 border-violet-300"
+                          : "bg-violet-600 text-white border-violet-600"
                         : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
                     }`}
-                    title={`${b.source} · ${b.contact_count} total contacts · ${new Date(b.created_at).toLocaleDateString()}`}
+                    title={`${b.source} · ${b.contact_count} total contacts · ${new Date(b.created_at).toLocaleString()}${
+                      empty ? "\n(no pending drafts — all have been sent or none generated yet)" : ""
+                    }`}
+                    onDoubleClick={() => selectOnlyBatch(b.id)}
                   >
-                    {b.name}
-                    <span className={`ml-1.5 text-[10px] ${on ? "text-violet-100" : "text-slate-400"}`}>
-                      {n}
+                    <input
+                      type="checkbox" checked={on}
+                      onChange={() => toggleBatch(b.id)}
+                      className={`h-3 w-3 rounded ${on && !empty ? "accent-white" : ""}`}
+                    />
+                    <span>{b.name}</span>
+                    <span className={`text-[10px] ${
+                      on ? (empty ? "text-violet-500" : "text-violet-100") : "text-slate-400"
+                    }`}>
+                      ({n})
                     </span>
-                  </button>
+                  </label>
                 );
               })}
               {orphanCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => toggleBatch("__none__")}
-                  onDoubleClick={() => selectOnlyBatch("__none__")}
-                  className={`text-xs px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                <label
+                  className={`text-xs px-2.5 py-1 rounded-md border font-medium transition-colors inline-flex items-center gap-1.5 cursor-pointer ${
                     activeBatches.has("__none__")
                       ? "bg-slate-700 text-white border-slate-700"
                       : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
                   }`}
                   title="Contacts without an import_batch_id"
+                  onDoubleClick={() => selectOnlyBatch("__none__")}
                 >
-                  Untagged
-                  <span className={`ml-1.5 text-[10px] ${activeBatches.has("__none__") ? "text-slate-200" : "text-slate-400"}`}>
-                    {orphanCount}
+                  <input
+                    type="checkbox" checked={activeBatches.has("__none__")}
+                    onChange={() => toggleBatch("__none__")}
+                    className="h-3 w-3 rounded"
+                  />
+                  <span>Untagged</span>
+                  <span className={`text-[10px] ${activeBatches.has("__none__") ? "text-slate-200" : "text-slate-400"}`}>
+                    ({orphanCount})
                   </span>
-                </button>
+                </label>
               )}
+            </div>
+            <div className="text-[10px] text-violet-700/70 leading-relaxed">
+              Tip: double-click any chip to <strong>isolate</strong> (hide every other batch in one click).
+              Empty chips = no pending drafts in that batch right now.
             </div>
           </div>
         )}
