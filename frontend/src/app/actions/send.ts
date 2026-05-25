@@ -85,17 +85,25 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
     id, contacts(first_name, last_name, email, title, companies(id, name, domain, brief_one_line))
   `).eq("template_id", templateId).eq("status", "pending_approval");
 
+  // Parallelize the per-row UPDATEs — UPDATEs can't be batched into one call
+  // since each row gets unique rendered_subject/body, but we can issue them
+  // concurrently instead of serially. Bounded pool to avoid PgBouncer limits.
+  const POOL = 10;
   let rerendered = 0;
-  for (const d of drafts ?? []) {
-    const c = (d as any).contacts;
-    if (!c) continue;
-    const co = c.companies ?? null;
-    const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
-    const subj = render(subject, ctx);
-    const text = render(body, ctx);
-    const html = plainToTrackedHtml(text, d.id);
-    await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
-    rerendered++;
+  const list = drafts ?? [];
+  for (let i = 0; i < list.length; i += POOL) {
+    const batch = list.slice(i, i + POOL);
+    await Promise.all(batch.map(async (d) => {
+      const c = (d as any).contacts;
+      if (!c) return;
+      const co = c.companies ?? null;
+      const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
+      const subj = render(subject, ctx);
+      const text = render(body, ctx);
+      const html = plainToTrackedHtml(text, d.id);
+      await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
+      rerendered++;
+    }));
   }
 
   revalidatePath("/approve");
@@ -135,18 +143,18 @@ export async function generateDraftsForContacts(contactIds: string[], campaignNa
     .select("*, companies(*)").in("id", eligibleIds)
     .is("unsubscribed_at", null).is("skip_reason", null);
 
-  let created = 0;
+  // Build all rows in memory first, then batch-insert in ONE round-trip
+  // (was N round-trips × 2 inserts = serial Atlantic latency hell)
+  const sendRows: any[] = [];
   for (const contact of contacts ?? []) {
     const company = (contact as any).companies as CompanyRow | null;
     const opener = company?.brief_one_line ?? "";
-
     const sendId = randomUUID();
     const ctx = buildContext(contact as any, company, { company_brief_one_line: opener });
     const subject = render(template.subject_tmpl, ctx);
     const text = render(template.body_tmpl, ctx);
     const html = plainToTrackedHtml(text, sendId);
-
-    const { error } = await sb.from("sends").insert({
+    sendRows.push({
       id: sendId,
       contact_id: (contact as any).id,
       campaign_id: campaign.id,
@@ -157,9 +165,18 @@ export async function generateDraftsForContacts(contactIds: string[], campaignNa
       rendered_body: html,
       status: "pending_approval",
     });
-    if (error) continue;
-    await sb.from("approvals").insert({ send_id: sendId, status: "pending" });
-    created++;
+  }
+
+  let created = 0;
+  if (sendRows.length > 0) {
+    const { data: ins, error } = await sb.from("sends").insert(sendRows).select("id");
+    if (error) return { ok: false, error: error.message };
+    created = ins?.length ?? 0;
+    if (created > 0) {
+      await sb.from("approvals").insert(
+        (ins ?? []).map((r: any) => ({ send_id: r.id, status: "pending" }))
+      );
+    }
   }
 
   revalidatePath("/approve");
@@ -201,19 +218,24 @@ export async function generateDrafts(opts: {
     template.body_tmpl = opts.overrideBody ?? template.body_tmpl;
 
     // Re-render all currently-pending drafts using this template so the
-    // edits show up in the Approve queue immediately.
+    // edits show up in the Approve queue immediately (parallel, pool of 10).
     const { data: existingDrafts } = await sb.from("sends").select(`
       id, contacts(first_name, last_name, email, title, companies(id, name, domain, brief_one_line))
     `).eq("template_id", template.id).eq("status", "pending_approval");
-    for (const d of existingDrafts ?? []) {
-      const c = (d as any).contacts;
-      if (!c) continue;
-      const co = c.companies ?? null;
-      const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
-      const subj = render(template.subject_tmpl, ctx);
-      const text = render(template.body_tmpl, ctx);
-      const html = plainToTrackedHtml(text, d.id);
-      await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
+    const POOL = 10;
+    const list = existingDrafts ?? [];
+    for (let i = 0; i < list.length; i += POOL) {
+      const batch = list.slice(i, i + POOL);
+      await Promise.all(batch.map(async (d) => {
+        const c = (d as any).contacts;
+        if (!c) return;
+        const co = c.companies ?? null;
+        const ctx = buildContext(c, co, { company_brief_one_line: co?.brief_one_line ?? "" });
+        const subj = render(template.subject_tmpl, ctx);
+        const text = render(template.body_tmpl, ctx);
+        const html = plainToTrackedHtml(text, d.id);
+        await sb.from("sends").update({ rendered_subject: subj, rendered_body: html }).eq("id", d.id);
+      }));
     }
   }
 
@@ -243,13 +265,26 @@ export async function generateDrafts(opts: {
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
   const pool = (contacts as any[]).filter(c => !touched.has(c.id));
 
-  let created = 0, failed = 0;
+  // Phase 1 (optional): run LLM opener rewrites in parallel with bounded concurrency.
+  // Without batching, 50 contacts × 1-3s sequential = 1-3 min. With pool of 5, ~6× faster.
+  const openers = new Map<string, string>();
+  if (useLlm) {
+    const POOL = 5;
+    const work = pool.filter(c => (c as any).companies?.id);
+    for (let i = 0; i < work.length; i += POOL) {
+      const batch = work.slice(i, i + POOL);
+      await Promise.all(batch.map(async (c) => {
+        const co = (c as any).companies;
+        try { openers.set(co.id, await rewriteCompanyBrief(co)); } catch { /* fall back */ }
+      }));
+    }
+  }
+
+  // Phase 2: build all rows in memory (pure CPU work, no I/O)
+  const sendRows: any[] = [];
   for (const contact of pool) {
     const company = (contact as any).companies as CompanyRow | null;
-    let opener = company?.brief_one_line ?? "";
-    if (useLlm && company?.id) {
-      try { opener = await rewriteCompanyBrief(company); } catch { /* fall back */ }
-    }
+    const opener = (company?.id && openers.get(company.id)) || company?.brief_one_line || "";
 
     const sendId = randomUUID();
     const ctx = buildContext(contact as any, company, { company_brief_one_line: opener });
@@ -257,7 +292,7 @@ export async function generateDrafts(opts: {
     const text = render(template.body_tmpl, ctx);
     const html = plainToTrackedHtml(text, sendId);
 
-    const { error } = await sb.from("sends").insert({
+    sendRows.push({
       id: sendId,
       contact_id: (contact as any).id,
       campaign_id: campaign.id,
@@ -268,9 +303,23 @@ export async function generateDrafts(opts: {
       rendered_body: html,
       status: "pending_approval",
     });
-    if (error) { failed++; continue; }
-    await sb.from("approvals").insert({ send_id: sendId, status: "pending" });
-    created++;
+  }
+
+  // Phase 3: batch insert sends + approvals (2 round-trips total instead of 2N)
+  let created = 0, failed = 0;
+  if (sendRows.length > 0) {
+    const { data: ins, error } = await sb.from("sends").insert(sendRows).select("id");
+    if (error) {
+      failed = sendRows.length;
+    } else {
+      created = ins?.length ?? 0;
+      failed = sendRows.length - created;
+      if (created > 0) {
+        await sb.from("approvals").insert(
+          (ins ?? []).map((r: any) => ({ send_id: r.id, status: "pending" }))
+        );
+      }
+    }
   }
 
   revalidatePath("/approve");
