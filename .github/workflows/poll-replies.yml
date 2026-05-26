@@ -15,6 +15,11 @@ on:
     - cron: "*/15 * * * *"     # every 15 min
   workflow_dispatch: {}         # also manual trigger from Actions tab
 
+# GitHub recently tightened default GITHUB_TOKEN scopes; actions/checkout
+# now returns 403 unless contents:read is granted explicitly.
+permissions:
+  contents: read
+
 concurrency:
   group: poll-replies
   cancel-in-progress: false     # don't kill an in-flight run

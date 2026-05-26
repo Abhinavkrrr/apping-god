@@ -14,7 +14,14 @@ const { getSupabase } = require("./lib/supabase");
 const args = process.argv.slice(2);
 const dry = args.includes("--dry-run");
 const limitIdx = args.indexOf("--limit");
-const limit = limitIdx >= 0 ? parseInt(args[limitIdx + 1] || "35", 10) : 35;
+const limit = limitIdx >= 0 ? parseInt(args[limitIdx + 1] || "50", 10) : 50;
+// Jitter window between sends (ms). Default 3-8s — still safe under Gmail's
+// per-account daily/per-min throttles (free Gmail 500/day, Workspace 2000/day,
+// neither cares about ~10s gaps). Override with --jitter-min / --jitter-max.
+const jMinIdx = args.indexOf("--jitter-min");
+const jMaxIdx = args.indexOf("--jitter-max");
+const jitterMin = jMinIdx >= 0 ? parseInt(args[jMinIdx + 1] || "3000", 10) : 3000;
+const jitterMax = jMaxIdx >= 0 ? parseInt(args[jMaxIdx + 1] || "8000", 10) : 8000;
 
 const FUNCTION_URL = `https://${process.env.SUPABASE_PROJECT_REF}.functions.supabase.co/send-worker`;
 const FOLLOWUP_DELAY_DAYS = 2;
@@ -74,8 +81,11 @@ const FOLLOWUP_DELAY_DAYS = 2;
       console.log(`✗ ${e.message}`);
       failed++;
     }
-    // Jitter 5-15 seconds between sends to look human
-    if (!dry) await new Promise(r => setTimeout(r, 5000 + Math.random() * 10000));
+    // Configurable jitter between sends (default 3-8s)
+    if (!dry) {
+      const wait = jitterMin + Math.random() * Math.max(0, jitterMax - jitterMin);
+      await new Promise(r => setTimeout(r, wait));
+    }
   }
-  console.log(`\nDone. sent=${sent} failed=${failed} skipped=${skipped}`);
+  console.log(`\nDone. sent=${sent} failed=${failed} skipped=${skipped} (jitter=${jitterMin}-${jitterMax}ms)`);
 })();

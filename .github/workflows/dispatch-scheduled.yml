@@ -16,6 +16,10 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
+# Explicit read so actions/checkout@v4 doesn't 403 on default-deny accounts.
+permissions:
+  contents: read
+
 concurrency:
   group: dispatch-scheduled
   cancel-in-progress: false
@@ -23,7 +27,7 @@ concurrency:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 9        # 50 sends × ~7s jitter = ~6min + overhead
 
     steps:
       - uses: actions/checkout@v4
@@ -54,4 +58,4 @@ jobs:
           EOF
 
       - name: Drain approved queue
-        run: node scripts/dispatch_approved.js --limit 20
+        run: node scripts/dispatch_approved.js --limit 50

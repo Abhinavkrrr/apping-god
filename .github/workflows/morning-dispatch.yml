@@ -24,6 +24,10 @@ on:
     - cron: "0 5 * * *"   # 5:00 UTC = 10:30 AM IST
   workflow_dispatch: {}     # also allow manual trigger from Actions tab
 
+# Explicit read so actions/checkout@v4 doesn't 403 on default-deny accounts.
+permissions:
+  contents: read
+
 jobs:
   dispatch:
     runs-on: ubuntu-latest
