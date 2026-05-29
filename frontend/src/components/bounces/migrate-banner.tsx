@@ -33,9 +33,15 @@ CREATE INDEX IF NOT EXISTS idx_bounces_send_id    ON bounces (send_id);
 CREATE INDEX IF NOT EXISTS idx_bounces_received_at ON bounces (received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bounces_type       ON bounces (bounce_type);
 
+-- Use ((received_at AT TIME ZONE 'UTC')::date) — the simpler
+-- (received_at::date) is rejected as non-IMMUTABLE in index expressions.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_bounces_send_status_day
-  ON bounces (send_id, smtp_status, (received_at::date))
+  ON bounces (send_id, smtp_status, ((received_at AT TIME ZONE 'UTC')::date))
   WHERE send_id IS NOT NULL;
+
+-- Enable RLS so anon/authenticated keys can't touch this admin-only table
+-- (the dashboard uses service_role which bypasses RLS).
+ALTER TABLE bounces ENABLE ROW LEVEL SECURITY;
 
 -- CRITICAL: tell PostgREST to reload its schema cache so the new table
 -- becomes visible to the dashboard immediately. Without this you'd get

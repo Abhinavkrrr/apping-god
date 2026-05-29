@@ -29,11 +29,17 @@ CREATE INDEX IF NOT EXISTS idx_bounces_received_at ON bounces (received_at DESC)
 CREATE INDEX IF NOT EXISTS idx_bounces_type ON bounces (bounce_type);
 
 -- Prevent duplicate rows if the same DSN gets re-polled (e.g. --since 0).
--- Unique on (send_id, smtp_status, received_at::date) lets us re-run without
--- exploding the table, but still lets a second-day soft-bounce escalation
--- record a fresh row.
+-- Unique on (send_id, smtp_status, day-bucketed received_at) so we can
+-- re-run without exploding the table, but still let a second-day soft-bounce
+-- escalation record a fresh row.
+--
+-- We MUST use ((received_at AT TIME ZONE 'UTC')::date) instead of the
+-- shorter (received_at::date) — the latter depends on the session timezone
+-- and Postgres rejects volatile expressions in index definitions with
+-- "42P17: functions in index expression must be marked IMMUTABLE".
+-- The AT TIME ZONE 'UTC' fixes the timezone so the cast becomes immutable.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_bounces_send_status_day
-  ON bounces (send_id, smtp_status, (received_at::date))
+  ON bounces (send_id, smtp_status, ((received_at AT TIME ZONE 'UTC')::date))
   WHERE send_id IS NOT NULL;
 
 -- CRITICAL when applying via Supabase SQL Editor: PostgREST caches the
