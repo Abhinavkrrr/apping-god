@@ -35,3 +35,10 @@ CREATE INDEX IF NOT EXISTS idx_bounces_type ON bounces (bounce_type);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_bounces_send_status_day
   ON bounces (send_id, smtp_status, (received_at::date))
   WHERE send_id IS NOT NULL;
+
+-- CRITICAL when applying via Supabase SQL Editor: PostgREST caches the
+-- schema on startup and won't expose the new table to the REST API until
+-- it gets this signal (or its ~10-min auto-refresh kicks in). Without
+-- this you'd hit "Could not find the table 'public.bounces' in the
+-- schema cache" on every dashboard call.
+NOTIFY pgrst, 'reload schema';

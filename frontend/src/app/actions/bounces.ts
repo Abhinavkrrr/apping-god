@@ -87,14 +87,39 @@ function parseBounceBody(body: string): ParsedBounce {
   return { failed_recipient, smtp_status, bounce_type, diagnostic };
 }
 
-/** Check whether the bounces table exists. Used by the dashboard to show
- * the right warning if the user hasn't applied the migration yet. */
-export async function bouncesTableExists(): Promise<boolean> {
+/** Check whether the bounces table exists AND is visible to PostgREST.
+ * Returns a 3-state result so the dashboard can show the right error:
+ *   'ok'           — table exists and is queryable
+ *   'missing'      — table doesn't exist in Postgres at all (run migration)
+ *   'cache_stale'  — table exists but PostgREST hasn't reloaded its schema
+ *                    cache yet (one-liner SQL fix: NOTIFY pgrst, 'reload schema';) */
+export async function bouncesTableStatus(): Promise<"ok" | "missing" | "cache_stale"> {
   const sb = createAdminClient();
   const { error } = await sb.from("bounces").select("id", { count: "exact", head: true });
-  // Postgres "relation does not exist" → PostgREST code 42P01 or message contains "does not exist"
-  if (!error) return true;
-  return !(error.message.includes("does not exist") || (error as any).code === "42P01");
+  if (!error) return "ok";
+
+  const msg = (error.message || "").toLowerCase();
+  const code = (error as any).code;
+
+  // PostgREST returns PGRST205 + this exact phrasing when the table was
+  // created post-startup and the schema cache hasn't refreshed yet.
+  if (code === "PGRST205" || msg.includes("could not find the table") || msg.includes("schema cache")) {
+    return "cache_stale";
+  }
+
+  // PostgreSQL "relation does not exist" (42P01) — the table really isn't there.
+  if (code === "42P01" || msg.includes("does not exist")) return "missing";
+
+  // Anything else (RLS, network, etc.) — treat as missing so the user gets
+  // the most informative banner with the full migration option.
+  return "missing";
+}
+
+/** Legacy boolean wrapper — kept for backward compatibility, returns true
+ * for both 'ok' and 'cache_stale' since the table physically exists. */
+export async function bouncesTableExists(): Promise<boolean> {
+  const s = await bouncesTableStatus();
+  return s === "ok" || s === "cache_stale";
 }
 
 export interface PotentialBounce {
@@ -155,16 +180,25 @@ export async function migratePotentialBounces(): Promise<{
   contacts_blocked?: number;
   sends_cancelled?: number;
   error?: string;
-  error_code?: "TABLE_MISSING" | "OTHER";
+  error_code?: "TABLE_MISSING" | "CACHE_STALE" | "OTHER";
 }> {
   const sb = createAdminClient();
 
-  // Sanity-check table existence first to return a friendlier error
-  if (!(await bouncesTableExists())) {
+  // Detect the two setup-time failure modes up-front so the UI shows the
+  // exact one-liner needed instead of a confusing generic insert error.
+  const status = await bouncesTableStatus();
+  if (status === "missing") {
     return {
       ok: false,
       error_code: "TABLE_MISSING",
-      error: "The bounces table doesn't exist yet. Open Supabase Dashboard → SQL Editor and run the migration SQL shown below.",
+      error: "The bounces table doesn't exist in your database yet. Run the migration SQL in Supabase SQL Editor first.",
+    };
+  }
+  if (status === "cache_stale") {
+    return {
+      ok: false,
+      error_code: "CACHE_STALE",
+      error: "The bounces table exists but Supabase's REST cache hasn't reloaded yet. Run `NOTIFY pgrst, 'reload schema';` in SQL Editor once, then retry.",
     };
   }
 
@@ -189,9 +223,21 @@ export async function migratePotentialBounces(): Promise<{
       raw_body: null,    // raw_body lives in replies until we delete that row
       received_at: p.received_at,
     });
-    // Ignore duplicate-key errors (re-run safety) but bail on other DB errors
-    if (insErr && !insErr.message.toLowerCase().includes("duplicate")) {
-      return { ok: false, error_code: "OTHER", error: `Insert failed: ${insErr.message}` };
+    if (insErr) {
+      const msg = (insErr.message || "").toLowerCase();
+      const code = (insErr as any).code;
+      // Duplicate-key from the (send_id, smtp_status, day) unique index — fine on re-runs
+      if (msg.includes("duplicate")) {
+        // count as migrated since the row IS there
+      } else if (code === "PGRST205" || msg.includes("could not find the table") || msg.includes("schema cache")) {
+        // Schema cache went stale mid-loop (e.g. another deploy). Tell user how to fix.
+        return {
+          ok: false, error_code: "CACHE_STALE",
+          error: "Supabase REST cache went stale during migration. Run `NOTIFY pgrst, 'reload schema';` in SQL Editor then retry.",
+        };
+      } else {
+        return { ok: false, error_code: "OTHER", error: `Insert failed: ${insErr.message}` };
+      }
     }
 
     // Block the contact (preserves Gmail sender rep — agent stops sending)

@@ -35,24 +35,122 @@ CREATE INDEX IF NOT EXISTS idx_bounces_type       ON bounces (bounce_type);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_bounces_send_status_day
   ON bounces (send_id, smtp_status, (received_at::date))
-  WHERE send_id IS NOT NULL;`;
+  WHERE send_id IS NOT NULL;
+
+-- CRITICAL: tell PostgREST to reload its schema cache so the new table
+-- becomes visible to the dashboard immediately. Without this you'd get
+-- "Could not find the table 'public.bounces' in the schema cache" until
+-- PostgREST's ~10-min auto-refresh kicks in.
+NOTIFY pgrst, 'reload schema';`;
+
+// If a user hits the stale-cache error, this exact one-liner fixes it
+// without re-running the whole migration.
+const SCHEMA_RELOAD_SQL = `NOTIFY pgrst, 'reload schema';`;
 
 export function MigrateBouncesBanner({
-  tableExists,
+  tableStatus,
   potentialCount,
   potentialPreview,
 }: {
-  tableExists: boolean;
+  tableStatus: "ok" | "missing" | "cache_stale";
   potentialCount: number;
   potentialPreview: Array<{ name: string; recipient: string; type: string }>;
 }) {
   const [busy, setBusy] = useState(false);
   const [, startTransition] = useTransition();
   const [sqlOpen, setSqlOpen] = useState(false);
+  const [reloadOpen, setReloadOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // ── Case 1a: schema cache stale (table exists, REST doesn't know) ──
+  if (tableStatus === "cache_stale") {
+    return (
+      <>
+        <div className="rounded-lg border border-orange-300 bg-orange-50 p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-orange-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <div className="font-semibold text-orange-900 text-sm">
+                Bounces table exists — but Supabase's REST cache hasn't picked it up yet
+              </div>
+              <p className="text-xs text-orange-800 mt-1 leading-relaxed">
+                You created the table successfully (good!) but PostgREST (the layer that powers the dashboard's
+                queries) cached the schema on startup and doesn't know about the new table.
+                One-line fix in SQL Editor, then everything works.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2 flex-wrap pl-8">
+            <Button size="sm" onClick={() => setReloadOpen(true)} className="bg-orange-600 hover:bg-orange-700 text-white">
+              <Database className="h-3.5 w-3.5 mr-1.5" /> Show one-line fix
+            </Button>
+            <a
+              href="https://supabase.com/dashboard/project/ouzfrefnhlxhpeyufllt/sql/new"
+              target="_blank" rel="noopener noreferrer"
+            >
+              <Button size="sm" variant="outline" className="border-orange-300 text-orange-700 hover:bg-orange-100">
+                Open Supabase SQL Editor <ExternalLink className="h-3 w-3 ml-1.5" />
+              </Button>
+            </a>
+          </div>
+          <div className="text-[11px] text-orange-700/80 pl-8 leading-relaxed">
+            ↪ Run the one-liner, refresh this page, click Migrate.
+          </div>
+        </div>
+
+        <Dialog open={reloadOpen} onOpenChange={setReloadOpen}>
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Tell PostgREST to refresh its schema cache</DialogTitle>
+              <DialogDescription>
+                Copy this one-liner → paste into Supabase Dashboard → SQL Editor → Run.
+                Takes &lt; 1 second. Then refresh this page.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="relative">
+              <pre className="bg-slate-900 text-emerald-200 text-sm p-4 rounded-md overflow-x-auto font-mono">
+                <code>{SCHEMA_RELOAD_SQL}</code>
+              </pre>
+              <Button
+                size="sm" variant="outline"
+                className="absolute top-2 right-2 h-7 px-2 text-xs"
+                onClick={() => {
+                  navigator.clipboard.writeText(SCHEMA_RELOAD_SQL);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                  toast.success("Copied — paste in SQL Editor, click Run, then refresh /bounces");
+                }}
+              >
+                {copied
+                  ? <><Check className="h-3 w-3 mr-1" /> Copied</>
+                  : <><Copy className="h-3 w-3 mr-1" /> Copy</>}
+              </Button>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">
+              Why this happens: PostgREST builds its API surface from your DB schema at startup.
+              When you add a table via SQL Editor mid-flight, PostgREST keeps using the old cached
+              schema until you send it the <code className="bg-slate-100 px-1 rounded text-[10px]">NOTIFY pgrst, 'reload schema'</code> signal
+              (or wait ~10 min for its auto-refresh). The Supabase dashboard's "Reload schema" button does the same thing.
+            </p>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="ghost"><X className="h-4 w-4 mr-1" /> Close</Button>
+              </DialogClose>
+              <a
+                href="https://supabase.com/dashboard/project/ouzfrefnhlxhpeyufllt/sql/new"
+                target="_blank" rel="noopener noreferrer"
+              >
+                <Button>Open SQL Editor <ExternalLink className="h-3 w-3 ml-1.5" /></Button>
+              </a>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+
   // ── Case 1: table missing ─────────────────────────────────────────
-  if (!tableExists) {
+  if (tableStatus === "missing") {
     return (
       <>
         <div className="rounded-lg border border-red-300 bg-red-50 p-4 space-y-3">
@@ -158,6 +256,9 @@ export function MigrateBouncesBanner({
         if (r.error_code === "TABLE_MISSING") {
           toast.error("Bounces table is missing — apply the migration first.");
           setSqlOpen(true);
+        } else if (r.error_code === "CACHE_STALE") {
+          toast.error("Supabase REST schema cache is stale — run the one-line refresh below.");
+          setReloadOpen(true);
         } else {
           toast.error(r.error ?? "Migration failed.");
         }

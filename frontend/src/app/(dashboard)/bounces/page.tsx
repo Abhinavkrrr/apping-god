@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, Ban, Clock, ShieldCheck } from "lucide-react";
-import { listBounces, listPotentialBounces, bouncesTableExists } from "@/app/actions/bounces";
+import { listBounces, listPotentialBounces, bouncesTableStatus } from "@/app/actions/bounces";
 import { BounceRowActions } from "@/components/bounces/bounce-row-actions";
 import { MigrateBouncesBanner } from "@/components/bounces/migrate-banner";
 
@@ -17,11 +17,11 @@ export default async function BouncesPage({
   const params = await searchParams;
   const filter = params.filter ?? "all";
 
-  // Always check whether the bounces table actually exists — if not, the
-  // user hasn't applied the migration yet and we need to tell them how.
-  const tableExists = await bouncesTableExists();
+  // Check 3-state status: ok / missing / cache_stale (latter means table
+  // exists in Postgres but Supabase REST hasn't reloaded its schema yet).
+  const tableStatus = await bouncesTableStatus();
 
-  const { bounces, stats } = tableExists
+  const { bounces, stats } = tableStatus === "ok"
     ? await listBounces({ filter })
     : { bounces: [], stats: { total: 0, hard: 0, soft: 0, unknown: 0, contacts_blocked: 0 } };
 
@@ -45,7 +45,7 @@ export default async function BouncesPage({
 
       {/* Setup banners */}
       <MigrateBouncesBanner
-        tableExists={tableExists}
+        tableStatus={tableStatus}
         potentialCount={potential.length}
         potentialPreview={potential.slice(0, 5).map(p => ({
           name: p.contact_name,
