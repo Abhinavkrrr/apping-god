@@ -32,7 +32,7 @@ const FOLLOWUP_DELAY_DAYS = 2;
 
   const { data: due } = await sb.from("sends").select(`
     id, contact_id, resume_id, rendered_subject, rendered_body, sequence_step,
-    contacts(email, unsubscribed_at)
+    contacts(email, unsubscribed_at, email_status, skip_reason)
   `)
     .eq("status", "approved")
     .lte("scheduled_at", new Date().toISOString())
@@ -44,8 +44,41 @@ const FOLLOWUP_DELAY_DAYS = 2;
   let sent = 0, failed = 0, skipped = 0;
   for (const send of due) {
     const c = send.contacts;
-    if (!c?.email) { console.log(`  skip ${send.id}: no contact email`); skipped++; continue; }
-    if (c.unsubscribed_at) { console.log(`  skip ${c.email}: unsubscribed`); skipped++; continue; }
+
+    // Defense in depth: even though bounce-handling cancels pending/approved
+    // sends when a bounce is detected, we re-check here right before firing
+    // because:
+    //   • Race window: a bounce might land between when this send was
+    //     approved and when this loop reaches it.
+    //   • Stale schedules: sends scheduled before bounce detection rolled
+    //     out could still be sitting in the queue.
+    //   • Defense against accidentally re-imported bounced contacts.
+    // Any of these checks fail → mark send as skipped (audit trail), don't fire.
+    let blockReason = null;
+    if (!c) blockReason = "contact_deleted";
+    else if (!c.email) blockReason = "no_email";
+    else if (c.unsubscribed_at) blockReason = "unsubscribed";
+    else if (c.email_status === "bounced") blockReason = "previously_bounced";
+    else if (c.skip_reason) blockReason = `skip_reason:${c.skip_reason}`;
+    else {
+      // Also check the unsubscribes table — covers bounced emails whose
+      // contact row has already been deleted but where we still hold a
+      // stale `approved` send pointing at the (now-null) contact_id.
+      const { data: unsub } = await sb.from("unsubscribes")
+        .select("email").eq("email", (c.email || "").toLowerCase()).maybeSingle();
+      if (unsub) blockReason = `unsubscribes_table:${unsub.email}`;
+    }
+
+    if (blockReason) {
+      console.log(`  skip ${c?.email ?? send.id}: ${blockReason}`);
+      await sb.from("sends").update({
+        status: "skipped",
+        failure_reason: `Blocked at dispatch: ${blockReason}`,
+      }).eq("id", send.id);
+      await sb.from("approvals").update({ status: "skipped" }).eq("send_id", send.id);
+      skipped++;
+      continue;
+    }
 
     process.stdout.write(`  ${c.email} ... `);
     if (dry) { console.log("(dry)"); sent++; continue; }

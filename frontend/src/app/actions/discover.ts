@@ -166,6 +166,11 @@ export async function addDiscoveredToContacts(opts: {
     const email = (p.email ?? "").toLowerCase().trim();
     if (!email || !email.includes("@") || !p.first_name) { failed++; continue; }
 
+    // Block re-add of previously-bounced / unsubscribed emails
+    const { data: blocked } = await sb.from("unsubscribes")
+      .select("email").eq("email", email).maybeSingle();
+    if (blocked) { failed++; continue; }
+
     let company_id: string | null = null;
     if (p.company_name) {
       const { data: existingCo } = await sb.from("companies").select("id")

@@ -313,16 +313,23 @@ async function classify(body) {
           });
           if (bErr) console.warn("  ⚠ bounce insert:", bErr.message);
 
-          // Stop ALL future sends to this contact (per user request — any
-          // bounce, hard or soft, halts the agent for that address).
+          // Stop ALL future sends to this contact + remove them entirely.
+          // (User requirement: "if an email bounces then never again send
+          // it to it..remove it from the application as well")
+          //
+          // Order matters:
+          //   1. Cancel pending/approved sends FIRST (cascades to approvals)
+          //   2. Audit-log the bounce as an event (FK on events is to send_id,
+          //      not contact_id, so this survives contact deletion)
+          //   3. Look up contact email (need it for unsubscribes table)
+          //   4. Add email to unsubscribes — prevents re-import via CSV /
+          //      Quick Add / Discover from ever re-creating this contact
+          //   5. DELETE the contact — cascades sends/events/replies via FK,
+          //      but bounces.contact_id is ON DELETE SET NULL (migration
+          //      20260527000002) so the bounce record survives with the
+          //      failed_recipient + diagnostic preserved for audit.
           if (parent.contact_id) {
-            const skipReason = parsed.bounce_type === "hard" ? "hard_bounce" : "soft_bounce";
-            await sb.from("contacts").update({
-              email_status: "bounced",
-              skip_reason: skipReason,
-            }).eq("id", parent.contact_id);
-
-            // Cancel anything in the pipeline that hasn't gone out yet
+            // 1. Cancel pipeline
             const { data: cancelled } = await sb.from("sends").update({
               status: "skipped",
               failure_reason: `Contact bounced (${parsed.bounce_type})`,
@@ -335,7 +342,7 @@ async function classify(body) {
                 .in("send_id", cancelled.map(c => c.id));
             }
 
-            // Audit-log the bounce as an event so /overview timeline shows it
+            // 2. Audit event
             await sb.from("events").insert({
               send_id: parent.id, type: "bounce",
               metadata: {
@@ -345,6 +352,24 @@ async function classify(body) {
                 cancelled_sends: cancelled?.length ?? 0,
               },
             });
+
+            // 3. Get the contact's email (need it for unsubscribes)
+            const { data: contact } = await sb.from("contacts")
+              .select("email").eq("id", parent.contact_id).maybeSingle();
+            const email = (contact?.email ?? parsed.failed_recipient ?? "").toLowerCase().trim();
+
+            // 4. Permanent block via unsubscribes (survives contact re-import)
+            if (email && email.includes("@")) {
+              await sb.from("unsubscribes").upsert({
+                email,
+                reason: `bounce_${parsed.bounce_type}`,
+              }, { onConflict: "email" });
+            }
+
+            // 5. Delete the contact — removes from /contacts UI, blocks all
+            // future generateDrafts (the contact pool is `contacts` itself).
+            // bounces.contact_id flips to NULL via SET NULL FK.
+            await sb.from("contacts").delete().eq("id", parent.contact_id);
           }
 
           bounced++;

@@ -59,7 +59,7 @@ Deno.serve(async () => {
   // Find due follow-ups
   const { data: due } = await sb.from("sends").select(`
     id, contact_id, campaign_id, sequence_step, thread_id, message_id,
-    contacts(first_name, email, unsubscribed_at, companies(name, brief_one_line))
+    contacts(first_name, email, unsubscribed_at, email_status, skip_reason, companies(name, brief_one_line))
   `)
     .lte("next_followup_at", now.toISOString())
     .lt("sequence_step", 3)
@@ -69,7 +69,19 @@ Deno.serve(async () => {
   let created = 0, skipped = 0;
   for (const send of due ?? []) {
     const c = (send as any).contacts;
-    if (!c?.email || c?.unsubscribed_at) { skipped++; continue; }
+    // Skip if contact was deleted (e.g., bounced and removed), has no email,
+    // unsubscribed, was marked bounced, or has any skip_reason set. This
+    // prevents follow-ups from going out to addresses that bounced on the
+    // first send.
+    if (!c) { skipped++; continue; }
+    if (!c.email || c.unsubscribed_at) { skipped++; continue; }
+    if (c.email_status === "bounced" || c.skip_reason) { skipped++; continue; }
+
+    // Also check the unsubscribes table in case the bounce flow removed the
+    // contact but left a stale send pointer with a now-null contact reference.
+    const { data: unsub } = await sb.from("unsubscribes")
+      .select("email").eq("email", (c.email ?? "").toLowerCase()).maybeSingle();
+    if (unsub) { skipped++; continue; }
 
     // Atomically CLAIM this row by clearing next_followup_at — if another
     // concurrent run already grabbed it, our update affects 0 rows and we skip.

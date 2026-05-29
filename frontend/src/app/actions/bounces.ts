@@ -240,15 +240,11 @@ export async function migratePotentialBounces(): Promise<{
       }
     }
 
-    // Block the contact (preserves Gmail sender rep — agent stops sending)
+    // Now nuke this contact from orbit so the system never tries them again.
+    // Order: cancel pipeline → unsubscribe (permanent block against re-import)
+    // → delete the contact. bounces.contact_id is ON DELETE SET NULL so the
+    // bounce record we just inserted survives with all the diagnostic info.
     if (p.contact_id) {
-      const skipReason = p.parsed.bounce_type === "hard" ? "hard_bounce" : "soft_bounce";
-      await sb.from("contacts").update({
-        email_status: "bounced",
-        skip_reason: skipReason,
-      }).eq("id", p.contact_id);
-      contactsBlockedSet.add(p.contact_id);
-
       // Cancel any still-pending/scheduled sends for this contact
       const { data: cancelled } = await sb.from("sends").update({
         status: "skipped",
@@ -262,9 +258,23 @@ export async function migratePotentialBounces(): Promise<{
           .in("send_id", cancelled.map(c => c.id));
         sendsCancelled += cancelled.length;
       }
+
+      // Permanent block on this address — even if user CSV-imports it again,
+      // the import action will refuse it (added in this commit too).
+      const email = (p.contact_email || p.parsed.failed_recipient || "").toLowerCase().trim();
+      if (email && email.includes("@")) {
+        await sb.from("unsubscribes").upsert({
+          email,
+          reason: `bounce_${p.parsed.bounce_type}`,
+        }, { onConflict: "email" });
+      }
+
+      // Delete the contact (cascades sends/events/replies via FK)
+      await sb.from("contacts").delete().eq("id", p.contact_id);
+      contactsBlockedSet.add(p.contact_id);
     }
 
-    // Finally remove the row from replies so /inbox stops showing it
+    // Remove the row from replies so /inbox stops showing it as a reply
     await sb.from("replies").delete().eq("id", p.reply_id);
     migrated++;
   }

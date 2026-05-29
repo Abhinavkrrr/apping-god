@@ -134,6 +134,49 @@ Deno.serve(async (req) => {
     );
   }
 
+  // ── Safety check: refuse to send to a bounced/unsubscribed address ──
+  // Even though the dispatcher already filters these out, defense-in-depth:
+  // some other caller (CLI test, manual API hit, race condition) could try
+  // to send to a dead address and burn our Gmail sender reputation. The
+  // unsubscribes table is the canonical "do not contact" list — check it
+  // by lowercased email.
+  const sbCheck = admin();
+  const toLower = to.toLowerCase().trim();
+  const { data: unsub } = await sbCheck.from("unsubscribes")
+    .select("email, reason").eq("email", toLower).maybeSingle();
+  if (unsub) {
+    // Mark the send as skipped if we were given a send_id, so the dispatcher
+    // sees a definitive answer.
+    if (logSendId) {
+      await sbCheck.from("sends").update({
+        status: "skipped",
+        failure_reason: `Recipient on unsubscribes list (${unsub.reason ?? "unknown"})`,
+      }).eq("id", logSendId);
+    }
+    return jsonResponse(
+      { ok: false, error: `recipient ${toLower} is on unsubscribes list (${unsub.reason ?? "unknown"}) — refusing to send` },
+      400,
+    );
+  }
+  // Also check contacts row for bounced/skip_reason status (covers cases
+  // where unsubscribe wasn't written yet but the contact is already blocked)
+  const { data: contact } = await sbCheck.from("contacts")
+    .select("email_status, skip_reason, unsubscribed_at")
+    .eq("email", toLower).maybeSingle();
+  if (contact && (contact.email_status === "bounced" || contact.skip_reason || contact.unsubscribed_at)) {
+    const reason = contact.skip_reason ?? (contact.unsubscribed_at ? "unsubscribed" : "bounced");
+    if (logSendId) {
+      await sbCheck.from("sends").update({
+        status: "skipped",
+        failure_reason: `Contact blocked: ${reason}`,
+      }).eq("id", logSendId);
+    }
+    return jsonResponse(
+      { ok: false, error: `contact ${toLower} blocked (${reason}) — refusing to send` },
+      400,
+    );
+  }
+
   // Optional resume attachment
   let attachment: { filename: string; content: Uint8Array; contentType: string } | null = null;
   if (resumeId) {

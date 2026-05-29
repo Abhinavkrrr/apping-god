@@ -37,6 +37,22 @@ export async function createImportBatch(input: {
 export async function addContact(input: AddContactInput, opts: { skipRevalidate?: boolean } = {}) {
   const sb = createAdminClient();
 
+  // BLOCK re-imports of previously-bounced / unsubscribed emails. The
+  // unsubscribes table is the canonical "do not contact" list — populated
+  // by the bounce flow (poll_replies + dashboard migrate) AND by user
+  // manual unsubscribes. Refuse to add a contact with such an email.
+  const earlyEmail = (input.email ?? "").toLowerCase().trim();
+  if (earlyEmail && earlyEmail.includes("@")) {
+    const { data: blocked } = await sb.from("unsubscribes")
+      .select("email, reason").eq("email", earlyEmail).maybeSingle();
+    if (blocked) {
+      return {
+        ok: false as const,
+        error: `${input.email} is blocked (${blocked.reason ?? "unsubscribed/bounced"}) — refusing to add`,
+      };
+    }
+  }
+
   // Resolve company by case-insensitive name
   let company_id: string | null = null;
   if (input.company_name?.trim()) {
