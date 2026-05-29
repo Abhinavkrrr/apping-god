@@ -21,14 +21,26 @@ export function DispatchBar({
 
   function handleSendNow() {
     if (pendingCount === 0) { toast.error("No pending drafts."); return; }
-    if (!confirm(`Send ${pendingCount} email(s) RIGHT NOW?\n\nEach send takes ~6s with jitter to avoid Gmail throttling.\nEstimated total: ${Math.ceil(pendingCount * 6 / 60)} min.\n\nCannot be undone.`)) return;
+    const drainMin = Math.ceil(pendingCount * 6 / 60);
+    if (!confirm(
+      `Queue ${pendingCount} draft(s) for IMMEDIATE cloud dispatch?\n\n` +
+      `→ Cloud cron picks them up within 15 minutes\n` +
+      `→ First send fires shortly after, then ~6 sec apart (jitter to avoid Gmail throttling)\n` +
+      `→ Full batch drains in ~${drainMin} min total\n\n` +
+      `Safe to close your laptop the moment you click OK — sending continues in the cloud.\n\n` +
+      `Cannot be undone.`
+    )) return;
     setBusy("send");
     startTransition(async () => {
-      toast.info(`Dispatching ${pendingCount} emails... this will take a while.`);
       const r = await sendAllPendingNow();
       setBusy(null);
-      if (r.ok) toast.success(`✓ Sent: ${r.sent} · Failed: ${r.failed} · Skipped: ${r.skipped}`);
-      else toast.error(r.error ?? "Send failed.");
+      if (r.ok) {
+        const skippedStr = r.skipped ? ` · ${r.skipped} skipped (no email / unsubscribed)` : "";
+        toast.success(
+          `✓ ${r.queued} queued for cloud dispatch${skippedStr}.\nSafe to close laptop.`,
+          { duration: 8000 }
+        );
+      } else toast.error(r.error ?? "Queue failed.");
     });
   }
 

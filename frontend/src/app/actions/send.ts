@@ -6,7 +6,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { render, buildContext, plainToTrackedHtml } from "@/lib/send/render";
 import { rewriteCompanyBrief } from "@/lib/send/llm";
 
-const FUNCTION_URL = `https://${process.env.NEXT_PUBLIC_SUPABASE_URL!.split("//")[1].split(".")[0]}.functions.supabase.co/send-worker`;
+// NOTE: the dashboard no longer dispatches sends directly via the Supabase
+// Edge Function (used to be FUNCTION_URL = `${SUPABASE_URL}/functions/v1/send-worker`).
+// All sending now flows through the GitHub Actions cron dispatcher
+// (scripts/dispatch_approved.js → send-worker), so the dashboard process
+// can die at any time without dropping a batch.
 const DEFAULT_CAMPAIGN_NAME = "Outreach"; // fallback when caller doesn't specify a campaign
 
 interface CompanyRow {
@@ -367,13 +371,29 @@ export async function sendSelectedPending(sendIds: string[]) {
   return sendPendingByIds(sendIds);
 }
 
+// ─────────────────────────────────────────────────────────────
+// CLOUD-DISPATCH SEND
+//
+// IMPORTANT CHANGE FROM PRIOR BEHAVIOR (commit bc2875a → now):
+// "Send NOW" used to loop through every send in the dashboard's
+// server-action process and fire each one via the Supabase Edge
+// function inline. If the user closed their laptop mid-batch, the
+// loop died and only the already-fired sends went out.
+//
+// New behavior: we ATOMICALLY mark every selected draft as 'approved'
+// with scheduled_at = NOW, then return immediately. The GitHub Actions
+// cron job (dispatch-scheduled.yml, every 15 min) drains them from the
+// cloud — completely independent of whether the user's laptop is open.
+//
+// Trade-off: up to 15-min latency until the first send fires after a
+// click, instead of "starts immediately". User can also manually
+// trigger the workflow from GitHub Actions UI to skip the wait.
+// ─────────────────────────────────────────────────────────────
 async function sendPendingByIds(sendIds: string[] | undefined) {
   const sb = createAdminClient();
 
-  let q = sb.from("sends").select(`
-    id, resume_id, rendered_subject, rendered_body,
-    contacts(email, unsubscribed_at)
-  `).eq("status", "pending_approval");
+  let q = sb.from("sends").select(`id, contacts(email, unsubscribed_at)`)
+    .eq("status", "pending_approval");
   if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
 
   const { data: pending } = await q;
@@ -381,57 +401,60 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
     return { ok: false, error: "No pending drafts to send." };
   }
 
-  let sent = 0, failed = 0, skipped = 0;
+  // Partition: contacts with no email or already unsubscribed get auto-skipped.
+  const queueIds: string[] = [];
+  const skipIds: string[] = [];
   for (const send of pending) {
     const c = (send as any).contacts;
-    if (!c?.email || c?.unsubscribed_at) { skipped++; continue; }
+    if (!c?.email || c?.unsubscribed_at) skipIds.push((send as any).id);
+    else queueIds.push((send as any).id);
+  }
 
-    // ATOMIC CLAIM: only succeed if status is still 'pending_approval'.
-    // Prevents double-send when two clicks/runs race on the same row.
+  const nowIso = new Date().toISOString();
+
+  // Bulk-mark the un-sendable ones (no email / unsubscribed) — kept as an
+  // audit trail of why they weren't sent.
+  if (skipIds.length > 0) {
+    await sb.from("sends").update({
+      status: "skipped",
+      failure_reason: "Contact has no email or has unsubscribed",
+    }).in("id", skipIds);
+    await sb.from("approvals").update({ status: "skipped" }).in("send_id", skipIds);
+  }
+
+  // Bulk-queue the sendable ones with scheduled_at = NOW so the cloud
+  // dispatcher picks them up on its next 15-min tick. Atomic via the
+  // status='pending_approval' filter — only flips drafts that haven't
+  // already been claimed by something else.
+  let queued = 0;
+  if (queueIds.length > 0) {
     const { data: claimed } = await sb.from("sends").update({
-      status: "approved", scheduled_at: new Date().toISOString(),
-    }).eq("id", send.id).eq("status", "pending_approval").select("id");
-    if (!claimed || claimed.length === 0) { skipped++; continue; }
-
-    await sb.from("approvals").update({
-      status: "approved", reviewed_at: new Date().toISOString(),
-    }).eq("send_id", send.id);
-
-    try {
-      const res = await fetch(FUNCTION_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY!}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: c.email,
-          subject: send.rendered_subject,
-          text_body: send.rendered_body,
-          html_body: send.rendered_body,
-          resume_id: send.resume_id,
-          log_send_id: send.id,
-        }),
-      });
-      const out = await res.json();
-      if (res.ok && out.ok) {
-        const next = new Date(Date.now() + 2 * 86400_000).toISOString();
-        await sb.from("sends").update({ next_followup_at: next }).eq("id", send.id);
-        sent++;
-      } else {
-        await sb.from("sends").update({
-          status: "failed", failure_reason: out.error ?? `HTTP ${res.status}`,
-        }).eq("id", send.id);
-        failed++;
-      }
-    } catch (e) {
-      failed++;
+      status: "approved",
+      scheduled_at: nowIso,
+    }).in("id", queueIds).eq("status", "pending_approval").select("id");
+    queued = claimed?.length ?? 0;
+    if (queued > 0) {
+      await sb.from("approvals").update({
+        status: "approved", reviewed_at: nowIso,
+      }).in("send_id", (claimed ?? []).map((c: any) => c.id));
     }
   }
 
   revalidatePath("/approve");
+  revalidatePath("/scheduled");
+  revalidatePath("/sends");
   revalidatePath("/");
-  return { ok: true, sent, failed, skipped };
+  return {
+    ok: true,
+    queued,
+    skipped: skipIds.length,
+    cloud_dispatched: true,  // flag for the UI to show the right toast
+  };
+
+  /* ─── LEGACY INLINE LOOP (deleted; see commit a745d73 for the version
+   * that looped through every send in the dashboard process. Removed
+   * because closing the laptop killed in-flight batches. The cloud-
+   * dispatch model above is the new default.) ───────────────────── */
 }
 
 // ============================================================

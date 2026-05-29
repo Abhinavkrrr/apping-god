@@ -15,6 +15,7 @@ import {
   BarChart3,
   Settings,
   AlertTriangle,
+  History,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
@@ -27,6 +28,7 @@ const nav = [
   { href: "/resumes", label: "Resumes", icon: FileUser },
   { href: "/approve", label: "Approve & Send", icon: CheckSquare },
   { href: "/scheduled", label: "Scheduled", icon: CalendarClock },
+  { href: "/sends", label: "Send log", icon: History },
   { href: "/followups", label: "Follow-ups", icon: Clock },
   { href: "/inbox", label: "Reply inbox", icon: Inbox },
   { href: "/bounces", label: "Bounces", icon: AlertTriangle },

@@ -15,17 +15,26 @@ export function BulkBar({ selected, onClear }: { selected: string[]; onClear: ()
   if (selected.length === 0) return null;
 
   function sendSelected() {
-    if (!confirm(`Send ${selected.length} email(s) RIGHT NOW?\n\nEstimated time: ~${Math.ceil(selected.length * 6 / 60)} min with throttling jitter.\n\nCannot be undone.`)) return;
+    const drainMin = Math.ceil(selected.length * 6 / 60);
+    if (!confirm(
+      `Queue ${selected.length} draft(s) for IMMEDIATE cloud dispatch?\n\n` +
+      `→ Cloud cron picks them up within 15 minutes\n` +
+      `→ Then they fire ~6 sec apart (jitter), full batch drains in ~${drainMin} min\n\n` +
+      `Safe to close your laptop the moment you click OK.\n\nCannot be undone.`
+    )) return;
     setBusy("send");
     startTransition(async () => {
-      toast.info(`Dispatching ${selected.length} emails...`);
-      const r = await sendSelectedPending(selected) as { ok: boolean; sent?: number; failed?: number; skipped?: number; error?: string };
+      const r = await sendSelectedPending(selected) as { ok: boolean; queued?: number; skipped?: number; error?: string };
       setBusy(null);
       if (r.ok) {
-        toast.success(`✓ Sent: ${r.sent ?? 0} · Failed: ${r.failed ?? 0} · Skipped: ${r.skipped ?? 0}`);
+        const skippedStr = r.skipped ? ` · ${r.skipped} skipped (no email / unsubscribed)` : "";
+        toast.success(
+          `✓ ${r.queued ?? 0} queued for cloud dispatch${skippedStr}.\nSafe to close laptop.`,
+          { duration: 8000 }
+        );
         onClear();
       } else {
-        toast.error(r.error ?? "Send failed.");
+        toast.error(r.error ?? "Queue failed.");
       }
     });
   }
