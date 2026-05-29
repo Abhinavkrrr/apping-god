@@ -3,32 +3,38 @@ import { Badge } from "@/components/ui/badge";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { TemplateEditor } from "@/components/templates/template-editor";
 import { NewTemplateModal } from "@/components/templates/new-template-modal";
+import { ResumeToggle } from "@/components/templates/resume-toggle";
+import { listResumeOptions } from "@/app/actions/resumes";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 async function loadTemplates() {
   const sb = createAdminClient();
+  // Select resume_id too so each campaign card knows what CV (if any) is wired up.
   const { data: campaigns } = await sb
-    .from("campaigns").select("id, name").eq("status", "active").order("name");
+    .from("campaigns").select("id, name, resume_id").eq("status", "active").order("name");
 
-  if (!campaigns) return { groups: [], campaigns: [] };
+  if (!campaigns) return { groups: [], campaigns: [], resumeOptions: [] };
 
-  const groups = await Promise.all(
-    campaigns.map(async (c) => {
-      const { data: templates } = await sb
-        .from("templates").select("*")
-        .eq("campaign_id", c.id)
-        .order("is_followup", { ascending: true })
-        .order("followup_step", { ascending: true, nullsFirst: true });
-      return { campaign: c, templates: templates ?? [] };
-    })
-  );
-  return { groups, campaigns };
+  const [groups, resumeOptions] = await Promise.all([
+    Promise.all(
+      campaigns.map(async (c) => {
+        const { data: templates } = await sb
+          .from("templates").select("*")
+          .eq("campaign_id", c.id)
+          .order("is_followup", { ascending: true })
+          .order("followup_step", { ascending: true, nullsFirst: true });
+        return { campaign: c, templates: templates ?? [] };
+      })
+    ),
+    listResumeOptions(),
+  ]);
+  return { groups, campaigns, resumeOptions };
 }
 
 export default async function TemplatesPage() {
-  const { groups, campaigns } = await loadTemplates();
+  const { groups, campaigns, resumeOptions } = await loadTemplates();
 
   return (
     <div className="space-y-6">
@@ -49,8 +55,8 @@ export default async function TemplatesPage() {
       {groups.map(({ campaign, templates }) => (
         <Card key={campaign.id}>
           <CardHeader className="border-b border-slate-100">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
                 <CardTitle className="flex items-center gap-2">
                   {campaign.name}
                   <Badge variant="info">{templates.length} templates</Badge>
@@ -59,6 +65,12 @@ export default async function TemplatesPage() {
                   4-step sequence: first-touch + 3 follow-ups (Day 0 → 2 → 4 → 6).
                 </CardDescription>
               </div>
+              <ResumeToggle
+                campaignId={campaign.id}
+                campaignName={campaign.name}
+                currentResumeId={(campaign as any).resume_id ?? null}
+                options={resumeOptions}
+              />
             </div>
           </CardHeader>
           <CardContent className="divide-y divide-slate-100 p-0">
