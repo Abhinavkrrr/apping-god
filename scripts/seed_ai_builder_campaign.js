@@ -87,6 +87,22 @@ const STEPS = [
   await c.connect();
   console.log("Connected.");
 
+  // 0. Look up the default resume so we can attach it on creation. Without
+  //    this, the campaign would have resume_id=NULL and NO CV would attach
+  //    to its outgoing emails — a silent failure for an internship pitch.
+  const { rows: defaultResume } = await c.query(`
+    SELECT id, label FROM resumes
+    WHERE is_default = true
+    ORDER BY uploaded_at DESC LIMIT 1
+  `);
+  const resumeId = defaultResume[0]?.id ?? null;
+  if (resumeId) {
+    console.log(`  · Will attach default resume: '${defaultResume[0].label}'`);
+  } else {
+    console.warn("  ⚠ No default resume found. Campaign will be created without CV attachment.");
+    console.warn("    Upload one via /resumes and mark is_default=true, then re-run with --reset.");
+  }
+
   // 1. Find or create the campaign
   let { rows } = await c.query(
     "SELECT id, resume_id FROM campaigns WHERE name = 'AI Builder Internship'"
@@ -95,15 +111,20 @@ const STEPS = [
   if (rows.length === 0) {
     const ins = await c.query(`
       INSERT INTO campaigns
-        (name, target_role, status, send_window_local_hour, send_window_local_minute, send_days)
+        (name, target_role, status, resume_id, send_window_local_hour, send_window_local_minute, send_days)
       VALUES
         ('AI Builder Internship', 'Product / Founder''s Office / Strategy / AI internship — AI-tooling angle',
-         'active', 10, 30, ARRAY[1,2,3,4,5])
+         'active', $1, 10, 30, ARRAY[1,2,3,4,5])
       RETURNING id, resume_id
-    `);
+    `, [resumeId]);
     campaignId = ins.rows[0].id;
     console.log("  ✓ Created campaign 'AI Builder Internship' (active)");
   } else {
+    // If campaign existed but had no resume_id, attach the default now
+    if (!rows[0].resume_id && resumeId) {
+      await c.query("UPDATE campaigns SET resume_id = $1 WHERE id = $2", [resumeId, rows[0].id]);
+      console.log("  ✓ Attached default resume to existing campaign (was NULL)");
+    }
     campaignId = rows[0].id;
     if (reset) {
       console.log("  ↻ Reset flag set — wiping existing templates + sequences");
