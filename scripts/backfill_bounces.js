@@ -20,35 +20,54 @@ const POOLER = {
   database: "postgres", ssl: { rejectUnauthorized: false },
 };
 
-// ─── Bounce parsing (duplicated from poll_replies.js so this script is standalone) ───
+// ─── Bounce parsing (kept in sync with poll_replies.js — same regexes) ───
 function parseBounce(body) {
-  const recipMatch = body.match(/Final-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
-    ?? body.match(/Original-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
-    ?? body.match(/(?:to|recipient).{0,40}?:\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
-  const failed_recipient = recipMatch ? recipMatch[1].trim().toLowerCase() : null;
+  let failed_recipient = null;
+  let m =
+       body.match(/Final-Recipient:\s*(?:rfc822;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)/i)
+    ?? body.match(/Original-Recipient:\s*(?:rfc822;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)/i)
+    ?? body.match(/<([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>\s*:\s*host\s+\S+/i)
+    ?? body.match(/(?:to|recipient|for)\s*[:\s]\s*<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>?/i)
+    ?? body.match(/<([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>/i);
+  if (m) failed_recipient = m[1].trim().toLowerCase();
 
-  const statusMatch = body.match(/Status:\s*(\d\.\d+\.\d+)/i);
-  const smtp_status = statusMatch ? statusMatch[1] : null;
+  let smtp_status = null;
+  m = body.match(/Status:\s*(\d\.\d+\.\d+)/i);
+  if (m) smtp_status = m[1];
+  if (!smtp_status) {
+    m = body.match(/\b(?:5\d{2}|4\d{2})[\s-](\d\.\d+\.\d+)/);
+    if (m) smtp_status = m[1];
+  }
+  if (!smtp_status) {
+    m = body.match(/\b(5\d{2}|4\d{2})\b/);
+    if (m) smtp_status = `${m[1][0]}.0.0`;
+  }
 
-  const diagMatch = body.match(/Diagnostic-Code:\s*([^\r\n]+)/i)
-    ?? body.match(/(?:response was|reason):\s*([^\r\n]+)/i);
-  let diagnostic = diagMatch ? diagMatch[1].trim() : null;
-  if (diagnostic && diagnostic.length > 500) diagnostic = diagnostic.slice(0, 500);
+  let diagnostic = null;
+  m = body.match(/Diagnostic-Code:\s*(?:smtp;\s*)?([^\r\n]+)/i)
+   ?? body.match(/(?:response was|the reason was|said|reason)\s*[:\s]\s*([^\r\n]+)/i)
+   ?? body.match(/(?:5\d{2}|4\d{2})[\s-](?:\d\.\d+\.\d+\s+)?([^\r\n<]+)/i);
+  if (m) {
+    diagnostic = m[1].trim().replace(/\s+/g, " ");
+    if (diagnostic.length > 500) diagnostic = diagnostic.slice(0, 500);
+  }
 
   const actionMatch = body.match(/Action:\s*(failed|delayed|delivered)/i);
   const action = actionMatch ? actionMatch[1].toLowerCase() : null;
 
   let bounce_type = "unknown";
   if (smtp_status) {
-    if (smtp_status.startsWith("5.")) bounce_type = "hard";
-    else if (smtp_status.startsWith("4.")) bounce_type = "soft";
+    if (smtp_status.startsWith("5")) bounce_type = "hard";
+    else if (smtp_status.startsWith("4")) bounce_type = "soft";
   }
-  if (bounce_type === "unknown" && action === "failed") bounce_type = "hard";
+  if (bounce_type === "unknown" && action === "failed")  bounce_type = "hard";
   if (bounce_type === "unknown" && action === "delayed") bounce_type = "soft";
-  if (bounce_type === "unknown" && /address (not found|does not exist|rejected)|user unknown|no such user/i.test(body)) {
-    bounce_type = "hard";
-  } else if (bounce_type === "unknown" && /temporary|will retry|mailbox full|timed out|deferred/i.test(body)) {
-    bounce_type = "soft";
+  if (bounce_type === "unknown") {
+    if (/(?:email account .*does not exist|address (?:not found|does not exist|rejected|invalid)|user unknown|no such user|no such recipient|account .*has been (?:disabled|suspended|closed)|user (?:doesn'?t exist|is unknown))/i.test(body)) {
+      bounce_type = "hard";
+    } else if (/(?:temporary|will retry|mailbox full|over quota|timed out|deferred|temporary failure|try again later|grey-?listed|throttled)/i.test(body)) {
+      bounce_type = "soft";
+    }
   }
   return { failed_recipient, smtp_status, bounce_type, diagnostic };
 }
@@ -58,15 +77,30 @@ function parseBounce(body) {
   await c.connect();
   console.log(`${dryRun ? "[DRY-RUN] " : ""}Scanning replies for bounces…`);
 
+  // Detection mirrors poll_replies.js isBounce(): match sender daemon
+  // patterns, OR characteristic body phrases / SMTP failure codes (catches
+  // bounces relayed through corporate filters like Trend Micro where the
+  // sender is no-reply@tmes-in.trendmicro.com instead of mailer-daemon).
   const { rows } = await c.query(`
     SELECT r.id, r.send_id, r.from_email, r.raw_body, r.received_at,
            s.contact_id
     FROM replies r
     JOIN sends s ON s.id = r.send_id
-    WHERE r.from_email ~* '(mailer-daemon|postmaster|mail-delivery)'
+    WHERE
+         -- daemon-like sender
+         r.from_email ~* '(mailer-?daemon|postmaster|mail[-.\\s]?delivery|mail[-.\\s]?system|delivery[-.\\s]?(status|notification)|email[-.\\s]?delivery)'
+      OR -- Postfix / Trend Micro classic body phrases
+         r.raw_body ~* 'i.{0,2}m sorry to have to inform you that your message could not be delivered'
+      OR r.raw_body ~* 'this is an automatically generated delivery status notification'
+      OR r.raw_body ~* 'your message (wasn|could not be|was not) (be |)delivered'
+      OR r.raw_body ~* 'delivery to the following recipient.{0,10}failed'
+      OR r.raw_body ~* '<[^>]+>\\s*:\\s*host\\s+\\S+.{0,40}said:'
+      OR -- inline SMTP failure code with failure context (550-5.1.1, 550 5.7.1, etc.)
+         (r.raw_body ~ '\\m(5[0-9]{2}|4[0-9]{2})[ -][0-9]\\.[0-9]+\\.[0-9]+\\M'
+          AND r.raw_body ~* '(deliver|reject|undeliver|user (unknown|does not exist)|account.*does not exist|address (not found|rejected|invalid)|mailbox (full|unavailable)|no such (user|recipient))')
     ORDER BY r.received_at DESC
   `);
-  console.log(`Found ${rows.length} mailer-daemon entries in replies table.`);
+  console.log(`Found ${rows.length} bounce-pattern entries in replies table.`);
 
   let migrated = 0, skipped = 0, contactsBlocked = 0, sendsCancelled = 0;
   const contactIdsBounced = new Set();

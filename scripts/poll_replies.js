@@ -21,22 +21,78 @@ const forceSince = sinceArgIdx >= 0 ? parseInt(args[sinceArgIdx + 1] || "0", 10)
 
 // ─────────────────────────────────────────────────────────────────
 // BOUNCE DETECTION — DSN (Delivery Status Notification) parsing
+//
+// Bounce notifications come from a frustrating variety of formats:
+//   - Gmail: From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+//            Subject: "Delivery Status Notification (...)"
+//            Body: standard RFC-3464 DSN with Final-Recipient, Status, etc.
+//   - Postfix (most ISPs): From: MAILER-DAEMON@<their-domain>
+//            Subject: "Undelivered Mail Returned to Sender"
+//            Body: "I'm sorry to have to inform you that your message could
+//                   not be delivered" + "<email>: host smtp.X said:" + SMTP code
+//   - Trend Micro / corporate filters: From: Mail Delivery System
+//            <no-reply@tmes-in.trendmicro.com> — sender pattern doesn't say
+//            "mailer-daemon" because the bounce was relayed through a filter.
+//            Display name DOES say "Mail Delivery System" though.
+//   - Exchange / Outlook: From: postmaster@<domain>
+//            Subject: "Undeliverable: ..."
+//
+// Detection has to check sender ADDRESS + sender NAME + subject + body
+// patterns + inline SMTP codes. Any one strong signal is enough.
 // ─────────────────────────────────────────────────────────────────
 
-// Senders we recognize as mail-delivery daemons (case-insensitive). If a
-// message comes from one of these, it's not a reply, it's a bounce.
-const DAEMON_RE = /(mailer-daemon|postmaster|mail-delivery)/i;
+// Address-or-display-name patterns that say "I am a mail-delivery daemon".
+// Tested against BOTH envelope.from[0].address and envelope.from[0].name
+// (lowercased) because relays often hide the daemon address but keep the
+// display name.
+const DAEMON_RE = /(mailer[-\s]?daemon|postmaster|mail[-\s.]delivery|mail[-\s.]system|delivery[-\s.]status|delivery[-\s.]notification|mail[-\s.]?gateway|email[-\s.]delivery)/i;
 
-// Subject patterns commonly used by Gmail/Outlook/etc. for DSNs.
-const BOUNCE_SUBJECT_RE = /(delivery status notification|undeliverable|delivery failure|delivery incomplete|returned mail|mail delivery failed)/i;
+// Subject patterns. "RE: <original subj>" is intentionally NOT here — many
+// bounces just thread under the original subject (per the user's screenshot).
+const BOUNCE_SUBJECT_RE = /(delivery status notification|undeliverable|undelivered|delivery failure|delivery incomplete|delivery has failed|returned mail|mail delivery failed|message not delivered|failure notice|returned to sender)/i;
+
+// Body phrases that are dead-giveaway bounce content.
+const BOUNCE_BODY_RE = new RegExp([
+  "this is an automatically generated delivery status notification",
+  "i'?m sorry to have to inform you that your message could not be delivered",
+  "your message (?:wasn'?t|could not be|was not) delivered",
+  "your message did not reach",
+  "delivery to the following recipient(?:s)? (?:has been |)?failed",
+  "the following address(?:es)? failed",
+  "delivery has failed to these recipients",
+  "this message was created automatically by mail delivery software",
+  "could not deliver your message",
+  "address(?:es)? listed below could not be reached",
+].join("|"), "i");
+
+// Inline SMTP failure codes — covers "550 5.1.1", "550-5.1.1", "554-5.7.1",
+// bare "550", and "Code: 550". Only counted as bounce when paired with
+// failure-context words to avoid false-positives on, say, someone quoting
+// HTTP status 550 in casual email.
+const SMTP_CODE_RE = /\b(5\d{2}|4\d{2})[\s-]?(?:\d\.\d+\.\d+)?\b/;
+const FAILURE_CONTEXT_RE = /\b(deliver|reject|undeliver|bounc|user (?:unknown|does not exist)|account.*does not exist|address (?:not found|rejected|invalid)|mailbox (?:full|unavailable|not found)|no such (?:user|recipient|address)|recipient (?:rejected|unknown|address rejected))/i;
 
 function isBounce(envelope, body) {
-  const from = envelope?.from?.[0]?.address ?? "";
-  if (DAEMON_RE.test(from)) return true;
-  const subj = envelope?.subject ?? "";
+  const fromAddr = (envelope?.from?.[0]?.address ?? "").toLowerCase();
+  const fromName = (envelope?.from?.[0]?.name ?? "").toLowerCase();
+  const subj     = envelope?.subject ?? "";
+
+  // 1. Daemon-like sender (address OR display name)
+  if (DAEMON_RE.test(fromAddr)) return true;
+  if (DAEMON_RE.test(fromName)) return true;
+
+  // 2. Bounce-specific subject line
   if (BOUNCE_SUBJECT_RE.test(subj)) return true;
-  // Last-ditch body sniff (some weird servers don't set sender properly)
-  if (/this is an automatically generated delivery status notification/i.test(body)) return true;
+
+  // 3. Dead-giveaway body phrases
+  if (BOUNCE_BODY_RE.test(body)) return true;
+
+  // 4. Inline SMTP failure code WITH failure-context phrase nearby
+  if (SMTP_CODE_RE.test(body) && FAILURE_CONTEXT_RE.test(body)) return true;
+
+  // 5. Postfix-format inline recipient: "<user@domain>: host X.com said:"
+  if (/<[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}>\s*:\s*host\s+\S+(?:\[[\d.]+\])?\s+said:/i.test(body)) return true;
+
   return false;
 }
 
@@ -50,39 +106,67 @@ function isBounce(envelope, body) {
  *     'unknown' → couldn't parse a status code — treat as soft.
  */
 function parseBounce(body) {
-  // Final-Recipient: rfc822; user@example.com
-  const recipMatch = body.match(/Final-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
-    ?? body.match(/Original-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
-    ?? body.match(/(?:to|recipient).{0,40}?:\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
-  const failed_recipient = recipMatch ? recipMatch[1].trim().toLowerCase() : null;
+  // ── 1. Failed recipient ─────────────────────────────────────────
+  // Try strongest signals first; fall back to weaker ones.
+  let failed_recipient = null;
+  let m =
+       body.match(/Final-Recipient:\s*(?:rfc822;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)/i)
+    ?? body.match(/Original-Recipient:\s*(?:rfc822;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)/i)
+    // Postfix-style:  "<user@domain>: host smtp.X.com said:"
+    ?? body.match(/<([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>\s*:\s*host\s+\S+/i)
+    // Generic mention near "to:" / "recipient:" / "for:"
+    ?? body.match(/(?:to|recipient|for)\s*[:\s]\s*<?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>?/i)
+    // Last resort: just find any address that's NOT ours
+    ?? body.match(/<([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})>/i);
+  if (m) failed_recipient = m[1].trim().toLowerCase();
 
-  // Status: 5.1.1 — hard. Status: 4.4.7 — soft.
-  const statusMatch = body.match(/Status:\s*(\d\.\d+\.\d+)/i);
-  const smtp_status = statusMatch ? statusMatch[1] : null;
+  // ── 2. SMTP status code ─────────────────────────────────────────
+  let smtp_status = null;
+  // Strongest: standard DSN header "Status: X.Y.Z"
+  m = body.match(/Status:\s*(\d\.\d+\.\d+)/i);
+  if (m) smtp_status = m[1];
+  // Next: inline "550 5.1.1" or "550-5.1.1" (Postfix smtp.X.com said: format)
+  if (!smtp_status) {
+    m = body.match(/\b(?:5\d{2}|4\d{2})[\s-](\d\.\d+\.\d+)/);
+    if (m) smtp_status = m[1];
+  }
+  // Last: just a 3-digit SMTP code → infer X.0.0 from first digit
+  if (!smtp_status) {
+    m = body.match(/\b(5\d{2}|4\d{2})\b/);
+    if (m) smtp_status = `${m[1][0]}.0.0`;
+  }
 
-  // Diagnostic-Code: smtp; 550 5.1.1 The email account that you tried to reach does not exist
-  const diagMatch = body.match(/Diagnostic-Code:\s*([^\r\n]+)/i)
-    ?? body.match(/(?:response was|reason):\s*([^\r\n]+)/i);
-  let diagnostic = diagMatch ? diagMatch[1].trim() : null;
-  if (diagnostic && diagnostic.length > 500) diagnostic = diagnostic.slice(0, 500);
+  // ── 3. Diagnostic message (the human-readable reason) ───────────
+  let diagnostic = null;
+  m = body.match(/Diagnostic-Code:\s*(?:smtp;\s*)?([^\r\n]+)/i)
+   ?? body.match(/(?:response was|the reason was|said|reason)\s*[:\s]\s*([^\r\n]+)/i)
+   // Postfix often prints the diagnostic right after the SMTP code
+   ?? body.match(/(?:5\d{2}|4\d{2})[\s-](?:\d\.\d+\.\d+\s+)?([^\r\n<]+)/i);
+  if (m) {
+    diagnostic = m[1].trim().replace(/\s+/g, " ");
+    if (diagnostic.length > 500) diagnostic = diagnostic.slice(0, 500);
+  }
 
-  // Action: failed | delayed | delivered (we only see failed/delayed in bounces)
+  // ── 4. DSN action: failed / delayed / delivered ─────────────────
   const actionMatch = body.match(/Action:\s*(failed|delayed|delivered)/i);
   const action = actionMatch ? actionMatch[1].toLowerCase() : null;
 
+  // ── 5. Classify hard vs soft ────────────────────────────────────
   let bounce_type = "unknown";
   if (smtp_status) {
-    if (smtp_status.startsWith("5.")) bounce_type = "hard";
-    else if (smtp_status.startsWith("4.")) bounce_type = "soft";
+    if (smtp_status.startsWith("5")) bounce_type = "hard";
+    else if (smtp_status.startsWith("4")) bounce_type = "soft";
   }
-  // Fallback on Action when no status code
-  if (bounce_type === "unknown" && action === "failed") bounce_type = "hard";
+  if (bounce_type === "unknown" && action === "failed")  bounce_type = "hard";
   if (bounce_type === "unknown" && action === "delayed") bounce_type = "soft";
-  // Body-keyword fallback
-  if (bounce_type === "unknown" && /address (not found|does not exist|rejected)|user unknown|no such user/i.test(body)) {
-    bounce_type = "hard";
-  } else if (bounce_type === "unknown" && /temporary|will retry|mailbox full|timed out|deferred/i.test(body)) {
-    bounce_type = "soft";
+
+  // Body-keyword classification (catches bounces with no status code at all)
+  if (bounce_type === "unknown") {
+    if (/(?:email account .*does not exist|address (?:not found|does not exist|rejected|invalid)|user unknown|no such user|no such recipient|account .*has been (?:disabled|suspended|closed)|user (?:doesn'?t exist|is unknown))/i.test(body)) {
+      bounce_type = "hard";
+    } else if (/(?:temporary|will retry|mailbox full|over quota|timed out|deferred|temporary failure|try again later|grey-?listed|throttled)/i.test(body)) {
+      bounce_type = "soft";
+    }
   }
 
   return { failed_recipient, smtp_status, bounce_type, diagnostic };
