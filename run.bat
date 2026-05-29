@@ -46,11 +46,11 @@ echo [INFO] Waiting 8 seconds for server to come up...
 timeout /t 8 /nobreak >nul
 
 echo [INFO] Opening dashboard in default browser...
-start "" "http://localhost:3000"
+start "" "http://localhost:3939"
 
 echo.
 echo ============================================
-echo   Dashboard launched at http://localhost:3000
+echo   Dashboard launched at http://localhost:3939
 echo   Close the Next.js window to stop the server.
 echo ============================================
 echo.
