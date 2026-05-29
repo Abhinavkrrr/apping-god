@@ -34,11 +34,11 @@ I'm Abhinav Kumar, a 3rd-year Chemical Engineering undergraduate at IIT Bombay, 
 
 What sets me apart beyond the standard CV: I'm a power user of **Claude Code, GPT-4o, Cursor, Lovable, v0** — and I ship complete production-grade products in days, not weeks. Two examples from my recent work:
 
-**1. ⚠️ EDIT ME: Experience #1**
-⚠️ Replace this whole paragraph via /templates before clicking Generate. Example format: "Product Manager Intern at <Company> · <Month-Month YYYY> · One-sentence concrete achievement with a metric. Second sentence on scope or impact."
+**1. Turtlemint — Product Manager Intern**
+Owned the end-to-end Loan Marketplace customer journey, shipped voice-assistant and credit-score-uplift features that boosted user engagement by **32%** and reduced funnel drop-off by **24%** across 15K+ monthly users. Also built a Natural-Language-to-SQL self-serve analytics tool with an LLM agent, cutting data-pull turnaround from 2 days to **under 5 minutes** and eliminating **60%** of ad-hoc analyst requests.
 
-**2. ⚠️ EDIT ME: Experience #2**
-⚠️ Replace this paragraph too. Same format works well.
+**2. Vijya Fintech — AI Product Manager Intern**
+Designed an AI Customer Success Chatbot on a multi-agent architecture that autonomously resolved **65%** of inbound emails and saved the support team **40+ hours/week**. Built an AI Lead Management System integrating web scrapers, agentic data cleaners, and transformer-based enrichment — **tripled qualified lead throughput** and lifted sales conversion by **22%**.
 
 Would love a 15-minute call to discuss how I could contribute at {{company}}.
 
