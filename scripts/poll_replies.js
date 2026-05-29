@@ -19,6 +19,75 @@ const args = process.argv.slice(2);
 const sinceArgIdx = args.indexOf("--since");
 const forceSince = sinceArgIdx >= 0 ? parseInt(args[sinceArgIdx + 1] || "0", 10) : null;
 
+// ─────────────────────────────────────────────────────────────────
+// BOUNCE DETECTION — DSN (Delivery Status Notification) parsing
+// ─────────────────────────────────────────────────────────────────
+
+// Senders we recognize as mail-delivery daemons (case-insensitive). If a
+// message comes from one of these, it's not a reply, it's a bounce.
+const DAEMON_RE = /(mailer-daemon|postmaster|mail-delivery)/i;
+
+// Subject patterns commonly used by Gmail/Outlook/etc. for DSNs.
+const BOUNCE_SUBJECT_RE = /(delivery status notification|undeliverable|delivery failure|delivery incomplete|returned mail|mail delivery failed)/i;
+
+function isBounce(envelope, body) {
+  const from = envelope?.from?.[0]?.address ?? "";
+  if (DAEMON_RE.test(from)) return true;
+  const subj = envelope?.subject ?? "";
+  if (BOUNCE_SUBJECT_RE.test(subj)) return true;
+  // Last-ditch body sniff (some weird servers don't set sender properly)
+  if (/this is an automatically generated delivery status notification/i.test(body)) return true;
+  return false;
+}
+
+/**
+ * Parses a Gmail/SMTP DSN body. Returns { failed_recipient, smtp_status,
+ * bounce_type, diagnostic }.
+ *   bounce_type:
+ *     'hard'    → SMTP 5.x.x or final "failed" action — address is dead
+ *     'soft'    → SMTP 4.x.x or "delayed" — temporary problem (mailbox full,
+ *                 server timeout). We still block to preserve sender rep.
+ *     'unknown' → couldn't parse a status code — treat as soft.
+ */
+function parseBounce(body) {
+  // Final-Recipient: rfc822; user@example.com
+  const recipMatch = body.match(/Final-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
+    ?? body.match(/Original-Recipient:\s*rfc822;\s*([^\s<>\r\n]+)/i)
+    ?? body.match(/(?:to|recipient).{0,40}?:\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+  const failed_recipient = recipMatch ? recipMatch[1].trim().toLowerCase() : null;
+
+  // Status: 5.1.1 — hard. Status: 4.4.7 — soft.
+  const statusMatch = body.match(/Status:\s*(\d\.\d+\.\d+)/i);
+  const smtp_status = statusMatch ? statusMatch[1] : null;
+
+  // Diagnostic-Code: smtp; 550 5.1.1 The email account that you tried to reach does not exist
+  const diagMatch = body.match(/Diagnostic-Code:\s*([^\r\n]+)/i)
+    ?? body.match(/(?:response was|reason):\s*([^\r\n]+)/i);
+  let diagnostic = diagMatch ? diagMatch[1].trim() : null;
+  if (diagnostic && diagnostic.length > 500) diagnostic = diagnostic.slice(0, 500);
+
+  // Action: failed | delayed | delivered (we only see failed/delayed in bounces)
+  const actionMatch = body.match(/Action:\s*(failed|delayed|delivered)/i);
+  const action = actionMatch ? actionMatch[1].toLowerCase() : null;
+
+  let bounce_type = "unknown";
+  if (smtp_status) {
+    if (smtp_status.startsWith("5.")) bounce_type = "hard";
+    else if (smtp_status.startsWith("4.")) bounce_type = "soft";
+  }
+  // Fallback on Action when no status code
+  if (bounce_type === "unknown" && action === "failed") bounce_type = "hard";
+  if (bounce_type === "unknown" && action === "delayed") bounce_type = "soft";
+  // Body-keyword fallback
+  if (bounce_type === "unknown" && /address (not found|does not exist|rejected)|user unknown|no such user/i.test(body)) {
+    bounce_type = "hard";
+  } else if (bounce_type === "unknown" && /temporary|will retry|mailbox full|timed out|deferred/i.test(body)) {
+    bounce_type = "soft";
+  }
+
+  return { failed_recipient, smtp_status, bounce_type, diagnostic };
+}
+
 const CLASSIFY_SYSTEM = `Classify the email reply into exactly one category:
 - positive: interested, wants to chat, asking for time
 - negative: not interested, declined, "no thanks"
@@ -80,7 +149,7 @@ async function classify(body) {
     logger: false,
   });
 
-  let processed = 0, matched = 0, classified = 0, newestUid = lastUid;
+  let processed = 0, matched = 0, classified = 0, bounced = 0, newestUid = lastUid;
 
   try {
     await client.connect();
@@ -119,12 +188,87 @@ async function classify(body) {
         const candidateIds = [inReplyTo, ...(Array.isArray(refs) ? refs : refs ? [refs] : [])].filter(Boolean);
         let parent = null;
         for (const id of candidateIds) {
-          const r = await sb.from("sends").select("id").eq("message_id", id).maybeSingle();
+          const r = await sb.from("sends").select("id, contact_id").eq("message_id", id).maybeSingle();
           if (r.data) { parent = r.data; break; }
         }
         if (!parent) continue;
         matched++;
 
+        const raw = msg.source?.toString("utf8") ?? "";
+        const bodyMatch = raw.match(/\r?\n\r?\n([\s\S]+)/);
+        const body = bodyMatch ? bodyMatch[1].slice(0, 4000) : raw.slice(0, 4000);
+        const fromEmail = msg.envelope?.from?.[0]?.address ?? "";
+
+        // ─── BOUNCE PATH ──────────────────────────────────────────
+        // If this is a DSN, log to bounces + cancel pending sends to this
+        // contact + mark the contact unsendable. Skip the reply path
+        // entirely so bounces don't pollute the inbox.
+        if (isBounce(msg.envelope, body)) {
+          const parsed = parseBounce(body);
+
+          // Skip if already recorded for this send today (idempotent re-run safety)
+          const { count: dupe } = await sb.from("bounces")
+            .select("id", { count: "exact", head: true })
+            .eq("send_id", parent.id)
+            .eq("smtp_status", parsed.smtp_status ?? "");
+          if ((dupe ?? 0) > 0) {
+            console.log(`  ↩ bounce uid=${msg.uid} already recorded for send ${parent.id}, skip`);
+            continue;
+          }
+
+          const { error: bErr } = await sb.from("bounces").insert({
+            send_id: parent.id,
+            contact_id: parent.contact_id,
+            bounce_type: parsed.bounce_type,
+            failed_recipient: parsed.failed_recipient,
+            smtp_status: parsed.smtp_status,
+            diagnostic: parsed.diagnostic,
+            from_daemon: fromEmail,
+            raw_body: body,
+            received_at: msg.internalDate?.toISOString() ?? new Date().toISOString(),
+          });
+          if (bErr) console.warn("  ⚠ bounce insert:", bErr.message);
+
+          // Stop ALL future sends to this contact (per user request — any
+          // bounce, hard or soft, halts the agent for that address).
+          if (parent.contact_id) {
+            const skipReason = parsed.bounce_type === "hard" ? "hard_bounce" : "soft_bounce";
+            await sb.from("contacts").update({
+              email_status: "bounced",
+              skip_reason: skipReason,
+            }).eq("id", parent.contact_id);
+
+            // Cancel anything in the pipeline that hasn't gone out yet
+            const { data: cancelled } = await sb.from("sends").update({
+              status: "skipped",
+              failure_reason: `Contact bounced (${parsed.bounce_type})`,
+            })
+              .eq("contact_id", parent.contact_id)
+              .in("status", ["pending_approval", "approved"])
+              .select("id");
+            if (cancelled && cancelled.length > 0) {
+              await sb.from("approvals").update({ status: "skipped" })
+                .in("send_id", cancelled.map(c => c.id));
+            }
+
+            // Audit-log the bounce as an event so /overview timeline shows it
+            await sb.from("events").insert({
+              send_id: parent.id, type: "bounce",
+              metadata: {
+                bounce_type: parsed.bounce_type,
+                smtp_status: parsed.smtp_status,
+                failed_recipient: parsed.failed_recipient,
+                cancelled_sends: cancelled?.length ?? 0,
+              },
+            });
+          }
+
+          bounced++;
+          console.log(`  ↩ ${parsed.bounce_type.toUpperCase()} bounce: ${parsed.failed_recipient ?? fromEmail}${parsed.smtp_status ? ` (${parsed.smtp_status})` : ""} → contact blocked, ${parsed.bounce_type === "hard" ? "hard" : "soft"} stop`);
+          continue;
+        }
+
+        // ─── REPLY PATH (existing behavior) ───────────────────────
         // Skip if already recorded (avoid duplicates on re-run with --since 0)
         const { count: already } = await sb.from("replies")
           .select("id", { count: "exact", head: true }).eq("send_id", parent.id);
@@ -132,11 +276,6 @@ async function classify(body) {
           console.log(`  uid=${msg.uid} already recorded for send ${parent.id}, skip`);
           continue;
         }
-
-        const raw = msg.source?.toString("utf8") ?? "";
-        const bodyMatch = raw.match(/\r?\n\r?\n([\s\S]+)/);
-        const body = bodyMatch ? bodyMatch[1].slice(0, 4000) : raw.slice(0, 4000);
-        const fromEmail = msg.envelope?.from?.[0]?.address ?? "";
 
         const classification = await classify(body);
         classified++;
@@ -176,5 +315,5 @@ async function classify(body) {
     console.log(`Updated last_uid: ${lastUid} → ${newestUid}`);
   }
 
-  console.log(`\nDone. processed=${processed} matched=${matched} classified=${classified}`);
+  console.log(`\nDone. processed=${processed} matched=${matched} replies=${classified} bounces=${bounced}`);
 })();

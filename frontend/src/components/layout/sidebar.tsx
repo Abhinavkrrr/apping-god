@@ -14,6 +14,7 @@ import {
   Inbox,
   BarChart3,
   Settings,
+  AlertTriangle,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
@@ -28,6 +29,7 @@ const nav = [
   { href: "/scheduled", label: "Scheduled", icon: CalendarClock },
   { href: "/followups", label: "Follow-ups", icon: Clock },
   { href: "/inbox", label: "Reply inbox", icon: Inbox },
+  { href: "/bounces", label: "Bounces", icon: AlertTriangle },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
