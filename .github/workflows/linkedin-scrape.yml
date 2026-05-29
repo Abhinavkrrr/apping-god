@@ -14,9 +14,6 @@ on:
   # schedule:
   #   - cron: "0 3 * * *"   # 3:00 UTC daily
   workflow_dispatch:
-
-permissions:
-  contents: read
     inputs:
       search_url:
         description: "LinkedIn search URL (people search, public profile filter)"
@@ -25,6 +22,9 @@ permissions:
       max_pages:
         description: "Max pages to scrape (default 3)"
         default: "3"
+
+permissions:
+  contents: read
 
 jobs:
   scrape:
