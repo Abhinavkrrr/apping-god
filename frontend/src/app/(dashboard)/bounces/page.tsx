@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, Ban, Clock, ShieldCheck } from "lucide-react";
-import { listBounces } from "@/app/actions/bounces";
+import { listBounces, listPotentialBounces, bouncesTableExists } from "@/app/actions/bounces";
 import { BounceRowActions } from "@/components/bounces/bounce-row-actions";
+import { MigrateBouncesBanner } from "@/components/bounces/migrate-banner";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,7 +16,18 @@ export default async function BouncesPage({
 }) {
   const params = await searchParams;
   const filter = params.filter ?? "all";
-  const { bounces, stats } = await listBounces({ filter });
+
+  // Always check whether the bounces table actually exists — if not, the
+  // user hasn't applied the migration yet and we need to tell them how.
+  const tableExists = await bouncesTableExists();
+
+  const { bounces, stats } = tableExists
+    ? await listBounces({ filter })
+    : { bounces: [], stats: { total: 0, hard: 0, soft: 0, unknown: 0, contacts_blocked: 0 } };
+
+  // Always scan replies for bounce-pattern messages that haven't been
+  // migrated (or that arrived before bounce detection existed).
+  const potential = await listPotentialBounces();
 
   return (
     <div className="space-y-6">
@@ -30,6 +42,17 @@ export default async function BouncesPage({
           address is valid (e.g. the recipient server was temporarily down).
         </p>
       </div>
+
+      {/* Setup banners */}
+      <MigrateBouncesBanner
+        tableExists={tableExists}
+        potentialCount={potential.length}
+        potentialPreview={potential.slice(0, 5).map(p => ({
+          name: p.contact_name,
+          recipient: p.parsed.failed_recipient ?? p.contact_email,
+          type: p.parsed.bounce_type,
+        }))}
+      />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
