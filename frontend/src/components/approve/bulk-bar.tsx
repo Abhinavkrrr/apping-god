@@ -24,12 +24,18 @@ export function BulkBar({ selected, onClear }: { selected: string[]; onClear: ()
     )) return;
     setBusy("send");
     startTransition(async () => {
-      const r = await sendSelectedPending(selected) as { ok: boolean; queued?: number; skipped?: number; error?: string };
+      const r = await sendSelectedPending(selected) as {
+        ok: boolean; queued?: number; skipped?: number;
+        dispatcher_triggered?: boolean; error?: string;
+      };
       setBusy(null);
       if (r.ok) {
         const skippedStr = r.skipped ? ` · ${r.skipped} skipped (no email / unsubscribed)` : "";
+        const tail = r.dispatcher_triggered
+          ? `Dispatcher fired — first send goes out in ~10 sec.`
+          : `Cloud cron will pick them up within 15 min. Safe to close laptop.`;
         toast.success(
-          `✓ ${r.queued ?? 0} queued for cloud dispatch${skippedStr}.\nSafe to close laptop.`,
+          `✓ ${r.queued ?? 0} queued${skippedStr}.\n${tail}`,
           { duration: 8000 }
         );
         onClear();

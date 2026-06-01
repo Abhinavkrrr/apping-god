@@ -440,6 +440,46 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
     }
   }
 
+  // INSTANT DISPATCH: if a GitHub PAT is configured, immediately trigger
+  // the dispatch-scheduled workflow so it starts firing sends within ~10s
+  // instead of waiting up to 15 min for the next cron tick. Silent
+  // fallback if the call fails OR the token isn't set — the cron will
+  // still pick them up on its normal schedule. Either way the user's
+  // queue is durable.
+  let dispatcher_triggered = false;
+  let dispatcher_trigger_error: string | null = null;
+  const ghToken = process.env.GH_WORKFLOW_TOKEN;
+  if (ghToken && queued > 0) {
+    try {
+      const owner = process.env.GH_REPO_OWNER ?? "Abhinavkrrr";
+      const repo  = process.env.GH_REPO_NAME  ?? "apping-god";
+      const ref   = process.env.GH_REPO_REF   ?? "main";
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/workflows/dispatch-scheduled.yml/dispatches`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${ghToken}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ref }),
+        }
+      );
+      // GitHub returns 204 No Content on success
+      if (res.status === 204) {
+        dispatcher_triggered = true;
+      } else {
+        dispatcher_trigger_error = `GitHub API ${res.status}: ${(await res.text()).slice(0, 200)}`;
+        console.warn("[dispatcher trigger]", dispatcher_trigger_error);
+      }
+    } catch (e) {
+      dispatcher_trigger_error = e instanceof Error ? e.message : String(e);
+      console.warn("[dispatcher trigger]", dispatcher_trigger_error);
+    }
+  }
+
   revalidatePath("/approve");
   revalidatePath("/scheduled");
   revalidatePath("/sends");
@@ -448,7 +488,9 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
     ok: true,
     queued,
     skipped: skipIds.length,
-    cloud_dispatched: true,  // flag for the UI to show the right toast
+    cloud_dispatched: true,            // queued for cloud dispatcher
+    dispatcher_triggered,              // true if we kicked the workflow ourselves
+    dispatcher_trigger_error,          // surfaced for diagnostics; UI ignores when triggered=true
   };
 
   /* ─── LEGACY INLINE LOOP (deleted; see commit a745d73 for the version

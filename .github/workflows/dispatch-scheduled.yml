@@ -27,7 +27,7 @@ concurrency:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
-    timeout-minutes: 9        # 50 sends × ~7s jitter = ~6min + overhead
+    timeout-minutes: 60       # 500 sends × ~6s jitter = ~50min + overhead
 
     steps:
       - uses: actions/checkout@v4
@@ -58,4 +58,8 @@ jobs:
           EOF
 
       - name: Drain approved queue
-        run: node scripts/dispatch_approved.js --limit 50
+        # Limit bumped from 50 → 500. With 6s avg jitter, that's a 50-min max
+        # run length — still well under the 60-min timeout. The `concurrency`
+        # block above guarantees no overlapping runs even if a tick lands
+        # mid-batch, so 500 in one shot is safe.
+        run: node scripts/dispatch_approved.js --limit 500

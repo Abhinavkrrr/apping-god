@@ -36,8 +36,11 @@ export function DispatchBar({
       setBusy(null);
       if (r.ok) {
         const skippedStr = r.skipped ? ` · ${r.skipped} skipped (no email / unsubscribed)` : "";
+        const tail = r.dispatcher_triggered
+          ? `Dispatcher fired — first send goes out in ~10 sec.`
+          : `Cloud cron will pick them up within 15 min. Safe to close laptop.`;
         toast.success(
-          `✓ ${r.queued} queued for cloud dispatch${skippedStr}.\nSafe to close laptop.`,
+          `✓ ${r.queued} queued${skippedStr}.\n${tail}`,
           { duration: 8000 }
         );
       } else toast.error(r.error ?? "Queue failed.");
