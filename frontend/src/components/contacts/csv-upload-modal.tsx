@@ -23,18 +23,104 @@ interface ParsedRow {
   company_name?: string;
   company_brief?: string;
   title?: string;
+  phone?: string;
+  linkedin_url?: string;
 }
 
-// Map of normalized canonical → list of accepted header variants (all lowercased).
+// Map of normalized canonical → list of accepted header variants
+// (all lowercased — matched after `.trim().toLowerCase()` on the header).
+//
+// When adding new aliases: include the SPACED, UNDERSCORED, HYPHENATED,
+// and ABBREVIATED forms. The detection runs an exact-match against the
+// lowercased trimmed header, so "email id" and "email_id" need separate
+// entries (NOT a regex pattern — explicit list keeps it predictable).
 const FIELD_ALIASES: Record<string, string[]> = {
-  email: ["email", "email_address", "emailaddress", "e-mail", "e_mail", "mail", "primary email"],
-  full_name: ["name", "full_name", "fullname", "full name", "contact", "contact name", "person", "person name"],
-  first_name: ["first_name", "firstname", "first name", "first", "fname", "given name", "given_name"],
-  last_name: ["last_name", "lastname", "last name", "last", "lname", "surname", "family name", "family_name"],
-  company: ["company", "company_name", "companyname", "company name", "organization", "organisation", "org", "employer", "account"],
-  company_brief: ["company_brief", "companybrief", "company brief", "brief", "description", "company description", "notes"],
-  title: ["title", "job_title", "jobtitle", "job title", "role", "position", "designation"],
-  linkedin: ["linkedin", "linkedin_url", "linkedinurl", "linkedin url", "linkedin profile", "li", "profile"],
+  email: [
+    // Plain
+    "email", "emails", "mail", "e-mail", "e_mail", "e mail",
+    // Compound: "Email id", "Email ID", "EmailID", "Email Address" — VERY common in
+    // Indian sales sheets, recruiting sheets, and most discovery exports
+    "email id", "emailid", "email_id", "e-mail id", "mail id", "mailid", "mail_id",
+    "email address", "emailaddress", "email_address", "e-mail address",
+    "primary email", "primary_email", "primary-email",
+    "work email", "work_email", "work-email", "official email", "office email",
+    "business email", "business_email", "company email", "corporate email",
+    "personal email", "personal_email",
+    "contact email", "contact_email",
+    "email work", "email primary",
+  ],
+  full_name: [
+    "name", "names", "full_name", "fullname", "full name", "full-name",
+    "contact", "contact name", "contact_name", "contactname",
+    "person", "person name", "person_name", "personname",
+    "lead", "lead name", "lead_name",
+    // POC = Point of Contact (very common in B2B/sales sheets)
+    "poc", "poc name", "poc_name", "pocname",
+    "point of contact", "point_of_contact",
+    "prospect", "prospect name", "prospect_name",
+    "candidate", "candidate name",
+    "recipient", "recipient name",
+    "to", "addressee",
+  ],
+  first_name: [
+    "first_name", "firstname", "first name", "first-name", "first",
+    "fname", "f_name", "f.name",
+    "given name", "given_name", "given-name",
+  ],
+  last_name: [
+    "last_name", "lastname", "last name", "last-name", "last",
+    "lname", "l_name", "l.name",
+    "surname", "sur name", "sur_name",
+    "family name", "family_name", "family-name",
+  ],
+  company: [
+    "company", "companies", "company_name", "companyname", "company name", "company-name",
+    "organization", "organisation", "org", "org name", "org_name",
+    "employer", "employer name",
+    "account", "account name",
+    "business", "business name",
+    "firm", "firm name",
+    "workplace",
+    // From discovery / export sheets:
+    "company link" /* falls through to detect URL, but we'd rather grab it */,
+  ],
+  company_brief: [
+    "company_brief", "companybrief", "company brief", "company-brief",
+    "brief", "description", "company description", "company_description",
+    "about", "about_company", "about company",
+    "notes", "note", "info", "details", "summary",
+    "sector", "industry",   // not exactly brief, but close-enough fallback
+  ],
+  title: [
+    "title", "titles", "job_title", "jobtitle", "job title", "job-title",
+    "role", "roles", "position", "positions",
+    "designation", "designations",
+    "department",
+    "function",
+    "seniority", // not exact but better than nothing
+  ],
+  linkedin: [
+    "linkedin", "linkedin_url", "linkedinurl", "linkedin url", "linkedin-url",
+    "linkedin id", "linkedinid", "linkedin_id",
+    "linkedin profile", "linkedin_profile", "linkedin-profile",
+    "linkedin link", "linkedin_link", "linkedin-link",
+    "linkedin handle", "linkedin_handle",
+    // "POC LinkedIn" / "POC Linkedin" — common in sales/lead sheets
+    "poc linkedin", "poc_linkedin", "poclinkedin", "poc li",
+    "li", "li url", "li_url", "li link", "li_link", "li id",
+    "profile", "profile url", "profile_url",
+    "social", "social_profile",
+  ],
+  phone: [
+    "phone", "phone_number", "phonenumber", "phone number", "phone-number",
+    "phone no", "phone_no", "phoneno",
+    // "Contact no" / "Contact number" — Indian sales sheets use this a lot
+    "contact no", "contact_no", "contactno", "contact number", "contact_number",
+    "mobile", "mobile_number", "mobile number", "mobile no", "mob",
+    "cell", "cell phone", "cell_phone", "cellphone",
+    "tel", "telephone", "telephone_number",
+    "whatsapp", "wa", "wa number",
+  ],
 };
 
 /** Build a {canonical → actual_header} map for a given header row. */
@@ -99,6 +185,22 @@ export function CsvUploadModal() {
         first = first.charAt(0).toUpperCase() + first.slice(1);
       }
 
+      // Phone — normalize aggressively: strip everything except digits and a
+      // single leading + (international prefix). Keeps things like
+      // "+91 6201 395251" / "91-6201-395251" / "(620) 139-5251" all clean.
+      const rawPhone = pick(r, map.phone);
+      const phone = rawPhone
+        ? (rawPhone.startsWith("+") ? "+" : "") + rawPhone.replace(/[^\d]/g, "")
+        : "";
+
+      // LinkedIn — leave as-is, but only keep it if it actually looks like a URL or handle
+      const rawLinkedin = pick(r, map.linkedin);
+      const linkedin_url = rawLinkedin && (rawLinkedin.includes("linkedin.com") || rawLinkedin.includes("/in/"))
+        ? rawLinkedin
+        : rawLinkedin && /^[a-z0-9\-]+$/i.test(rawLinkedin)
+          ? `https://www.linkedin.com/in/${rawLinkedin}`
+          : "";
+
       parsed.push({
         first_name: first,
         last_name: last || undefined,
@@ -106,6 +208,8 @@ export function CsvUploadModal() {
         company_name: pick(r, map.company) || undefined,
         company_brief: pick(r, map.company_brief) || undefined,
         title: pick(r, map.title) || undefined,
+        phone: phone || undefined,
+        linkedin_url: linkedin_url || undefined,
       });
     }
 

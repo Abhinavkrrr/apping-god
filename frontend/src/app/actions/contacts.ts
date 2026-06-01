@@ -11,6 +11,7 @@ interface AddContactInput {
   company_brief?: string;
   title?: string;
   linkedin_url?: string;
+  phone?: string;             // stored in contacts.custom_fields.phone (no schema change)
   batch_label?: string;       // legacy; stored in custom_fields for compatibility
   import_batch_id?: string;   // NEW: FK into import_batches table
   source?: string;            // e.g. "manual" | "csv-upload" | "quick-add"
@@ -76,6 +77,10 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
   const email = input.email.toLowerCase().trim();
   const custom_fields: Record<string, unknown> = {};
   if (input.batch_label) custom_fields.batch_label = input.batch_label;
+  // Phone goes into custom_fields (contacts table doesn't have a dedicated
+  // phone column yet — putting it here avoids a schema migration). Surfaces
+  // in /contacts row drawer via custom_fields.phone access.
+  if (input.phone?.trim()) custom_fields.phone = input.phone.trim();
 
   // Check if contact already exists by email (UNIQUE)
   const { data: existing } = await sb.from("contacts").select("id, custom_fields")
