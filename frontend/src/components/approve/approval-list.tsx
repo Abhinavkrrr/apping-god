@@ -40,15 +40,28 @@ export function ApprovalList({
     () => new Set([...batches.map(b => b.id), "__none__"])
   );
 
-  // Per-batch draft counts within the current pending pool (not the global
-  // contact_count — that includes already-sent contacts too).
-  const draftCountsByBatch = useMemo(() => {
-    const m = new Map<string, number>();
+  // Per-batch UNIQUE CONTACT counts (NOT raw draft rows).
+  // With N active campaigns, each contact has up to N pending drafts, so
+  // raw draft counts inflate the chip badges to ~N× the file size. Users
+  // imported 274 contacts in fintech.csv → expect the chip to say 274,
+  // not 751 (= 274 × ~3 campaigns). Count unique contact emails per
+  // batch instead.
+  //
+  // Side-table draftCountsByBatch is also kept so the header can still
+  // show the total visible-draft count (those are what get selected /
+  // sent / scheduled, so the user needs to see them too).
+  const { contactCountsByBatch, draftCountsByBatch } = useMemo(() => {
+    const emails = new Map<string, Set<string>>();
+    const drafts_n = new Map<string, number>();
     for (const d of drafts) {
       const k = d.import_batch_id ?? "__none__";
-      m.set(k, (m.get(k) ?? 0) + 1);
+      if (!emails.has(k)) emails.set(k, new Set());
+      emails.get(k)!.add(d.contact_email);
+      drafts_n.set(k, (drafts_n.get(k) ?? 0) + 1);
     }
-    return m;
+    const contacts_n = new Map<string, number>();
+    for (const [k, set] of emails) contacts_n.set(k, set.size);
+    return { contactCountsByBatch: contacts_n, draftCountsByBatch: drafts_n };
   }, [drafts]);
 
   const visibleDrafts = useMemo(
@@ -90,7 +103,11 @@ export function ApprovalList({
   }
 
   const allChecked = selected.size === visibleDrafts.length && visibleDrafts.length > 0;
-  const orphanCount = draftCountsByBatch.get("__none__") ?? 0;
+  // Orphan chip is shown when there are contacts with no batch_id assigned.
+  // Use contact count (not draft count) for the visibility decision so the
+  // chip appears once even if those contacts have 3 drafts each.
+  const orphanCount = contactCountsByBatch.get("__none__") ?? 0;
+  const orphanDraftCount = draftCountsByBatch.get("__none__") ?? 0;
 
   // ALWAYS show the chip row whenever batches exist — including batches
   // with zero pending drafts (so the user sees every CSV they've imported
@@ -111,7 +128,7 @@ export function ApprovalList({
               <div className="text-[11px] uppercase tracking-wide text-violet-700 font-semibold">
                 Import batches — uncheck to hide drafts from that file
                 <span className="ml-2 normal-case font-normal text-violet-600">
-                  ({checkedBatchesCount}/{chipCount} on · {visibleDrafts.length} of {drafts.length} drafts visible)
+                  ({checkedBatchesCount}/{chipCount} on · chip counts show <strong>contacts</strong> · {visibleDrafts.length} of {drafts.length} drafts visible)
                 </span>
               </div>
               <div className="flex gap-2 text-[10px] font-medium">
@@ -136,9 +153,10 @@ export function ApprovalList({
             </div>
             <div className="flex flex-wrap gap-1.5">
               {batches.map(b => {
-                const n = draftCountsByBatch.get(b.id) ?? 0;
+                const contactsInBatch = contactCountsByBatch.get(b.id) ?? 0;
+                const draftsInBatch   = draftCountsByBatch.get(b.id)   ?? 0;
                 const on = activeBatches.has(b.id);
-                const empty = n === 0;
+                const empty = contactsInBatch === 0;
                 return (
                   <label
                     key={b.id}
@@ -149,7 +167,7 @@ export function ApprovalList({
                           : "bg-violet-600 text-white border-violet-600"
                         : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
                     }`}
-                    title={`${b.source} · ${b.contact_count} total contacts · ${new Date(b.created_at).toLocaleString()}${
+                    title={`${b.source} · ${contactsInBatch} unique contact${contactsInBatch === 1 ? "" : "s"} with pending drafts · ${draftsInBatch} pending draft${draftsInBatch === 1 ? "" : "s"} total (one per active campaign) · ${b.contact_count} total contacts in this batch · imported ${new Date(b.created_at).toLocaleString()}${
                       empty ? "\n(no pending drafts — all have been sent or none generated yet)" : ""
                     }`}
                     onDoubleClick={() => selectOnlyBatch(b.id)}
@@ -163,7 +181,7 @@ export function ApprovalList({
                     <span className={`text-[10px] ${
                       on ? (empty ? "text-violet-500" : "text-violet-100") : "text-slate-400"
                     }`}>
-                      ({n})
+                      ({contactsInBatch})
                     </span>
                   </label>
                 );
@@ -175,7 +193,7 @@ export function ApprovalList({
                       ? "bg-slate-700 text-white border-slate-700"
                       : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
                   }`}
-                  title="Contacts without an import_batch_id"
+                  title={`Contacts without an import_batch_id · ${orphanCount} unique contact${orphanCount === 1 ? "" : "s"} · ${orphanDraftCount} pending draft${orphanDraftCount === 1 ? "" : "s"}`}
                   onDoubleClick={() => selectOnlyBatch("__none__")}
                 >
                   <input
