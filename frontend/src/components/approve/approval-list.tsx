@@ -1,8 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
+import { Loader2, Layers } from "lucide-react";
+import { toast } from "sonner";
 import { ApprovalRow } from "./approval-row";
 import { BulkBar } from "./bulk-bar";
+import { consolidatePendingDrafts } from "@/app/actions/send";
 
 interface Draft {
   id: string;
@@ -109,6 +112,40 @@ export function ApprovalList({
   const orphanCount = contactCountsByBatch.get("__none__") ?? 0;
   const orphanDraftCount = draftCountsByBatch.get("__none__") ?? 0;
 
+  // ── Consolidate state ──────────────────────────────────────────
+  // Total drafts minus unique contacts = duplicate count. If > 0, show
+  // the "Consolidate" button so user can collapse to 1 per contact.
+  const totalDrafts = drafts.length;
+  const uniqueContactCount = useMemo(
+    () => new Set(drafts.map(d => d.contact_email)).size,
+    [drafts]
+  );
+  const duplicateCount = Math.max(0, totalDrafts - uniqueContactCount);
+  const [consolidating, setConsolidating] = useState(false);
+  const [, startTrans] = useTransition();
+
+  function handleConsolidate() {
+    if (!confirm(
+      `Collapse ${totalDrafts} pending drafts down to ${uniqueContactCount} (1 per contact)?\n\n` +
+      `For every contact with multiple pending drafts (in different campaigns), the MOST RECENT one is kept and the others are deleted.\n\n` +
+      `This will delete ${duplicateCount} duplicate draft${duplicateCount === 1 ? "" : "s"}. Cannot be undone.`
+    )) return;
+    setConsolidating(true);
+    startTrans(async () => {
+      const r = await consolidatePendingDrafts();
+      setConsolidating(false);
+      if (r.ok) {
+        toast.success(
+          `✓ Consolidated · deleted ${r.deleted} duplicate${r.deleted === 1 ? "" : "s"} · ${r.after?.total_drafts ?? "?"} drafts remaining (${r.after?.contacts ?? "?"} contacts)`,
+          { duration: 8000 }
+        );
+        // Page revalidates server-side; the next render will show fresh numbers
+      } else {
+        toast.error(r.error ?? "Consolidate failed.");
+      }
+    });
+  }
+
   // ALWAYS show the chip row whenever batches exist — including batches
   // with zero pending drafts (so the user sees every CSV they've imported
   // and can understand the structure of their pipeline).
@@ -131,7 +168,21 @@ export function ApprovalList({
                   ({checkedBatchesCount}/{chipCount} on · chip counts show <strong>contacts</strong> · {visibleDrafts.length} of {drafts.length} drafts visible)
                 </span>
               </div>
-              <div className="flex gap-2 text-[10px] font-medium">
+              <div className="flex gap-2 text-[10px] font-medium items-center">
+                {duplicateCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleConsolidate}
+                    disabled={consolidating}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded border border-amber-400 bg-amber-100 text-amber-900 hover:bg-amber-200 disabled:opacity-50"
+                    title={`You have ${totalDrafts} pending drafts but only ${uniqueContactCount} unique contacts (${duplicateCount} contacts have drafts in multiple campaigns). Click to keep 1 draft per contact (most recent) and delete the rest.`}
+                  >
+                    {consolidating
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Layers className="h-3 w-3" />}
+                    Consolidate {duplicateCount} duplicate{duplicateCount === 1 ? "" : "s"}
+                  </button>
+                )}
                 {!allBatchesOn && (
                   <button
                     type="button" onClick={selectAllBatches}

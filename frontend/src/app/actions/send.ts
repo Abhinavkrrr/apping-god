@@ -408,6 +408,99 @@ export async function generateDrafts(opts: {
 }
 
 // ============================================================
+// CONSOLIDATE pending drafts — collapse to 1 per contact
+// ============================================================
+//
+// For each contact with > 1 pending_approval draft, keep the MOST RECENT
+// one and delete the rest. Used to clean up the legacy multi-campaign
+// state where the same contact had drafts in 2 or 3 campaigns
+// simultaneously. After running this, /approve's "Select all" count
+// will match the chip count (which already shows unique contacts).
+//
+// approvals.send_id is ON DELETE CASCADE so we only touch the sends
+// table; approval rows for deleted sends auto-clean.
+export async function consolidatePendingDrafts(opts: {
+  contactIds?: string[];  // optional: limit cleanup to these contacts. Default: all.
+} = {}): Promise<{
+  ok: boolean;
+  before?: { total_drafts: number; contacts: number; duplicates: number };
+  after?: { total_drafts: number; contacts: number };
+  deleted?: number;
+  error?: string;
+}> {
+  const sb = createAdminClient();
+
+  // BEFORE snapshot — for the toast
+  let beforeQuery = sb.from("sends").select("id, contact_id").eq("status", "pending_approval");
+  if (opts.contactIds && opts.contactIds.length > 0) {
+    beforeQuery = beforeQuery.in("contact_id", opts.contactIds);
+  }
+  const { data: beforeData } = await beforeQuery;
+  if (!beforeData) return { ok: false, error: "Couldn't load pending drafts." };
+
+  const before = {
+    total_drafts: beforeData.length,
+    contacts: new Set(beforeData.map((d: any) => d.contact_id).filter(Boolean)).size,
+    duplicates: 0,
+  };
+  before.duplicates = before.total_drafts - before.contacts;
+
+  if (before.duplicates === 0) {
+    return { ok: true, before, after: { total_drafts: before.total_drafts, contacts: before.contacts }, deleted: 0 };
+  }
+
+  // Group drafts by contact, sort each group desc by created_at, keep first.
+  // We need created_at — re-fetch with that field.
+  let detailQuery = sb.from("sends").select("id, contact_id, created_at")
+    .eq("status", "pending_approval");
+  if (opts.contactIds && opts.contactIds.length > 0) {
+    detailQuery = detailQuery.in("contact_id", opts.contactIds);
+  }
+  const { data: detailData } = await detailQuery;
+  if (!detailData) return { ok: false, error: "Couldn't load draft details." };
+
+  const byContact = new Map<string, any[]>();
+  for (const d of detailData as any[]) {
+    if (!d.contact_id) continue;
+    if (!byContact.has(d.contact_id)) byContact.set(d.contact_id, []);
+    byContact.get(d.contact_id)!.push(d);
+  }
+
+  const toDelete: string[] = [];
+  for (const [, drafts] of byContact) {
+    if (drafts.length <= 1) continue;
+    // Sort by created_at descending — keep [0], delete [1..]
+    drafts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    for (let i = 1; i < drafts.length; i++) toDelete.push(drafts[i].id);
+  }
+
+  if (toDelete.length === 0) {
+    return { ok: true, before, after: { total_drafts: before.total_drafts, contacts: before.contacts }, deleted: 0 };
+  }
+
+  // Bulk delete in chunks (Supabase has a URL length cap on .in() filters)
+  let deleted = 0;
+  const CHUNK = 500;
+  for (let i = 0; i < toDelete.length; i += CHUNK) {
+    const chunk = toDelete.slice(i, i + CHUNK);
+    const { data: del, error } = await sb.from("sends").delete().in("id", chunk).select("id");
+    if (error) return { ok: false, error: `delete: ${error.message}`, before, deleted };
+    deleted += del?.length ?? 0;
+  }
+
+  // AFTER snapshot
+  const after = {
+    total_drafts: before.total_drafts - deleted,
+    contacts: before.contacts,
+  };
+
+  revalidatePath("/approve");
+  revalidatePath("/sends");
+  revalidatePath("/");
+  return { ok: true, before, after, deleted };
+}
+
+// ============================================================
 // SEND ALL pending NOW
 // ============================================================
 export async function sendAllPendingNow() {
