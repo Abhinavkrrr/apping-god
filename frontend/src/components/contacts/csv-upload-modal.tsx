@@ -12,6 +12,7 @@ import {
 import { Upload, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import { bulkImportContacts } from "@/app/actions/contacts";
 import { generateDraftsForContacts } from "@/app/actions/send";
 
@@ -61,61 +62,124 @@ export function CsvUploadModal() {
   const [autoGenerate, setAutoGenerate] = useState(true);
   const [isPending, startTransition] = useTransition();
 
+  // Shared row-mapping pipeline. Takes header row + data rows, returns
+  // the parsed contacts (or null if no email column was detected).
+  function mapRowsToContacts(
+    headers: string[],
+    dataRows: Record<string, string>[]
+  ): { parsed: ParsedRow[]; skips: { reason: string; sample: string }[]; map: Record<string, string | null> } | null {
+    const map = detectColumns(headers);
+    if (!map.email) {
+      toast.error(`No email column found. Your file's headers: ${headers.join(", ")}`);
+      return null;
+    }
+
+    const parsed: ParsedRow[] = [];
+    const skips: { reason: string; sample: string }[] = [];
+
+    for (const r of dataRows) {
+      const email = pick(r, map.email).toLowerCase();
+      if (!email || !email.includes("@")) {
+        if (skips.length < 5) skips.push({ reason: "missing/invalid email", sample: JSON.stringify(r).slice(0, 80) });
+        continue;
+      }
+
+      // Derive name: prefer first_name + last_name, fall back to full_name
+      let first = pick(r, map.first_name);
+      let last = pick(r, map.last_name);
+      if (!first) {
+        const full = pick(r, map.full_name);
+        const parts = full.split(/\s+/).filter(Boolean);
+        first = parts[0] ?? "";
+        last = parts.slice(1).join(" ");
+      }
+      if (!first) {
+        // Last resort: use the part of email before @
+        first = email.split("@")[0].split(/[.\-_]/)[0];
+        first = first.charAt(0).toUpperCase() + first.slice(1);
+      }
+
+      parsed.push({
+        first_name: first,
+        last_name: last || undefined,
+        email,
+        company_name: pick(r, map.company) || undefined,
+        company_brief: pick(r, map.company_brief) || undefined,
+        title: pick(r, map.title) || undefined,
+      });
+    }
+
+    return { parsed, skips, map };
+  }
+
   function handleFile(file: File) {
     if (!batchLabel) {
       setBatchLabel(file.name.replace(/\.[^.]+$/, "").trim());
     }
     setRows([]); setDetected(null); setSkipped([]);
 
+    // Detect format by extension. Excel (.xlsx, .xls, .xlsm, .xlsb, .ods)
+    // → SheetJS. CSV / TSV / TXT → papaparse.
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const isExcel = ["xlsx", "xls", "xlsm", "xlsb", "ods"].includes(ext);
+
+    if (isExcel) {
+      // SheetJS path. Read as ArrayBuffer, take first sheet, convert to
+      // array-of-objects with string values so the same pipeline as CSV works.
+      const reader = new FileReader();
+      reader.onerror = () => toast.error("Could not read the file.");
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const wb = XLSX.read(data, { type: "array" });
+          const firstSheet = wb.SheetNames[0];
+          if (!firstSheet) { toast.error("Excel file has no sheets."); return; }
+          const sheet = wb.Sheets[firstSheet];
+
+          // Convert sheet to objects. defval:"" ensures empty cells become
+          // empty strings, not undefined — keeps the column-detection logic
+          // consistent with CSV behavior.
+          const rowsObj = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+            defval: "", raw: false,
+          });
+          if (rowsObj.length === 0) { toast.error(`Sheet "${firstSheet}" is empty.`); return; }
+
+          // Coerce every cell to string for the pipeline
+          const headers = Object.keys(rowsObj[0]);
+          const dataRows: Record<string, string>[] = rowsObj.map(r => {
+            const out: Record<string, string> = {};
+            for (const k of headers) out[k] = String(r[k] ?? "").trim();
+            return out;
+          });
+
+          const result = mapRowsToContacts(headers, dataRows);
+          if (!result) return;
+          setDetected(result.map);
+          setRows(result.parsed); setSkipped(result.skips);
+          toast.info(
+            `Parsed ${result.parsed.length} contact(s) from "${firstSheet}" sheet` +
+            (result.skips.length > 0 ? `, skipped ${result.skips.length}` : "") +
+            (wb.SheetNames.length > 1 ? ` (file has ${wb.SheetNames.length} sheets; only the first was read)` : "")
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`Excel parse failed: ${msg.slice(0, 120)}`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
+    // CSV path (also handles .tsv if user renames — papaparse auto-detects delimiter)
     Papa.parse<Record<string, string>>(file, {
       header: true, skipEmptyLines: true,
       complete: (res) => {
         const headers = res.meta.fields ?? [];
-        const map = detectColumns(headers);
-        setDetected(map);
-
-        if (!map.email) {
-          toast.error(`No email column found. Your CSV headers: ${headers.join(", ")}`);
-          return;
-        }
-
-        const parsed: ParsedRow[] = [];
-        const skips: { reason: string; sample: string }[] = [];
-
-        for (const r of res.data) {
-          const email = pick(r, map.email).toLowerCase();
-          if (!email || !email.includes("@")) {
-            if (skips.length < 5) skips.push({ reason: "missing/invalid email", sample: JSON.stringify(r).slice(0, 80) });
-            continue;
-          }
-
-          // Derive name: prefer first_name + last_name, fall back to full_name
-          let first = pick(r, map.first_name);
-          let last = pick(r, map.last_name);
-          if (!first) {
-            const full = pick(r, map.full_name);
-            const parts = full.split(/\s+/).filter(Boolean);
-            first = parts[0] ?? "";
-            last = parts.slice(1).join(" ");
-          }
-          if (!first) {
-            // Last resort: use the part of email before @
-            first = email.split("@")[0].split(/[.\-_]/)[0];
-            first = first.charAt(0).toUpperCase() + first.slice(1);
-          }
-
-          parsed.push({
-            first_name: first,
-            last_name: last || undefined,
-            email,
-            company_name: pick(r, map.company) || undefined,
-            company_brief: pick(r, map.company_brief) || undefined,
-            title: pick(r, map.title) || undefined,
-          });
-        }
-
-        setRows(parsed); setSkipped(skips);
-        toast.info(`Parsed ${parsed.length} contact(s)${skips.length > 0 ? `, skipped ${skips.length}` : ""}.`);
+        const result = mapRowsToContacts(headers, res.data);
+        if (!result) return;
+        setDetected(result.map);
+        setRows(result.parsed); setSkipped(result.skips);
+        toast.info(`Parsed ${result.parsed.length} contact(s)${result.skips.length > 0 ? `, skipped ${result.skips.length}` : ""}.`);
       },
       error: (e) => {
         toast.error(`CSV parse failed: ${e.message}`);
@@ -168,12 +232,14 @@ export function CsvUploadModal() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button><Upload className="h-4 w-4 mr-2" /> Import CSV</Button>
+        <Button><Upload className="h-4 w-4 mr-2" /> Import CSV / Excel</Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Import contacts from CSV</DialogTitle>
+          <DialogTitle>Import contacts from CSV or Excel</DialogTitle>
           <DialogDescription>
+            Accepts <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong>, <strong>.xlsm</strong>, <strong>.xlsb</strong>, and <strong>.ods</strong>.
+            For Excel files, only the <em>first sheet</em> is read.
             Auto-detects column names (case-insensitive). Required: an email column. Recognized:
             <br />
             <code className="text-[11px] bg-slate-100 px-1 rounded">email</code>,{" "}
@@ -196,10 +262,13 @@ export function CsvUploadModal() {
               placeholder="e.g. VCs March 2026" className="mt-1" />
           </div>
           <div>
-            <Label>CSV file</Label>
-            <Input type="file" accept=".csv,text/csv"
+            <Label>File (.csv / .xlsx / .xls / .ods)</Label>
+            <Input
+              type="file"
+              accept=".csv,text/csv,.xlsx,.xls,.xlsm,.xlsb,.ods,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet"
               onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-              className="mt-1" />
+              className="mt-1"
+            />
           </div>
 
           <label className="flex items-center gap-2 cursor-pointer text-sm">
