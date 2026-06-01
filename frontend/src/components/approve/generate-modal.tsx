@@ -48,6 +48,10 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
   const [useLlm, setUseLlm] = useState(false);
   const [startFresh, setStartFresh] = useState(false);
   const [globalDedup, setGlobalDedup] = useState(false);
+  // NEW (default ON): when generating in campaign X, delete any pending
+  // drafts these contacts already have in OTHER campaigns. Keeps the
+  // "1 contact = 1 pending draft" invariant the user expects.
+  const [switchCampaign, setSwitchCampaign] = useState(true);
   const [showPreview, setShowPreview] = useState(true);
   const [busy, setBusy] = useState<"save" | "generate" | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -121,12 +125,18 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
       const r = await generateDrafts({
         overrideSubject: isDirty ? subject : undefined,
         overrideBody: isDirty ? body : undefined,
-        useLlm, startFresh, globalDedup,
+        useLlm, startFresh, globalDedup, switchCampaign,
         campaignName: active.campaign_name,
       });
       setBusy(null);
       if (r.ok) {
-        toast.success(`✓ Created ${r.created} draft${r.created === 1 ? "" : "s"} in ${active.campaign_name}.`);
+        const cleanedTxt = (r.cleaned_other_campaigns ?? 0) > 0
+          ? ` · Wiped ${r.cleaned_other_campaigns} other-campaign draft${r.cleaned_other_campaigns === 1 ? "" : "s"}`
+          : "";
+        toast.success(
+          `✓ Created ${r.created} draft${r.created === 1 ? "" : "s"} in ${active.campaign_name}${cleanedTxt}.`,
+          { duration: 6000 }
+        );
         setOpen(false);
       } else {
         toast.error(r.error ?? "Failed.");
@@ -221,6 +231,13 @@ export function GenerateModal({ campaigns, mode = "generate" }: Props) {
           </div>
 
           <div className="flex flex-wrap gap-4 text-xs">
+            <label
+              className="flex items-center gap-2 cursor-pointer text-emerald-700"
+              title="ON (default): one contact = one pending draft at a time. Switching campaigns deletes any drafts these contacts have in OTHER campaigns. OFF: each campaign keeps its own draft for the same contact (rare — only useful for true multi-channel pitches like internship + SaaS to the same person)."
+            >
+              <input type="checkbox" checked={switchCampaign} onChange={(e) => setSwitchCampaign(e.target.checked)} className="h-3.5 w-3.5" />
+              <strong>Switch campaign</strong> (delete drafts in other campaigns for these contacts)
+            </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={useLlm} onChange={(e) => setUseLlm(e.target.checked)} className="h-3.5 w-3.5" />
               Use Gemini to personalize {`{{company_brief_one_line}}`} per company (slower)

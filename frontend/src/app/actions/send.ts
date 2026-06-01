@@ -131,7 +131,7 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 export async function generateDraftsForContacts(
   contactIds: string[],
   campaignName?: string,
-  opts: { globalDedup?: boolean } = {}
+  opts: { globalDedup?: boolean; switchCampaign?: boolean } = {}
 ) {
   const sb = createAdminClient();
   if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
@@ -146,11 +146,34 @@ export async function generateDraftsForContacts(
   if (!seq?.templates) return { ok: false, error: "Master template not found." };
   const template = (seq as any).templates;
 
-  // Per-campaign dedup: only skip contacts already touched in THIS campaign.
-  // Same contact can legitimately appear in multiple campaigns (different
-  // products = different pitches). The Approve queue is the safety net —
-  // user just shouldn't approve two same-day pitches to the same person.
-  // Set opts.globalDedup to skip contacts touched in ANY campaign.
+  // NEW DEFAULT (switchCampaign=true): treat each contact as having ONE
+  // active campaign at a time. If a contact has pending drafts in OTHER
+  // campaigns when we go to generate here, those get deleted first so
+  // they don't end up with 2 or 3 simultaneous pending pitches.
+  // Set switchCampaign=false to keep the old "draft per campaign per
+  // contact" behavior (rare — only useful for true multi-channel pitches
+  // where you genuinely want the same contact in both Outreach AND SaaS
+  // queues at the same time).
+  const switchCampaign = opts.switchCampaign ?? true;
+  let cleaned_other_campaigns = 0;
+  if (switchCampaign) {
+    const { data: otherDrafts } = await sb.from("sends")
+      .select("id")
+      .neq("campaign_id", campaign.id)
+      .eq("status", "pending_approval")
+      .in("contact_id", contactIds);
+    if (otherDrafts && otherDrafts.length > 0) {
+      const ids = otherDrafts.map((d: any) => d.id);
+      await sb.from("approvals").delete().in("send_id", ids);
+      await sb.from("sends").delete().in("id", ids);
+      cleaned_other_campaigns = ids.length;
+    }
+  }
+
+  // Per-campaign dedup: skip contacts already touched in THIS campaign so
+  // we don't double-draft. switchCampaign above already cleared other
+  // campaigns; this only catches "already pitched on this campaign".
+  // Opt-in opts.globalDedup adds the rare "skip across all campaigns" mode.
   const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"])
     .in("contact_id", contactIds);
@@ -159,7 +182,9 @@ export async function generateDraftsForContacts(
   const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
 
   const eligibleIds = contactIds.filter(id => !touched.has(id));
-  if (eligibleIds.length === 0) return { ok: true, created: 0, skipped: contactIds.length };
+  if (eligibleIds.length === 0) {
+    return { ok: true, created: 0, skipped: contactIds.length, cleaned_other_campaigns };
+  }
 
   const { data: contacts } = await sb.from("contacts")
     .select("*, companies(*)").in("id", eligibleIds)
@@ -203,7 +228,7 @@ export async function generateDraftsForContacts(
 
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, created, skipped: contactIds.length - created };
+  return { ok: true, created, skipped: contactIds.length - created, cleaned_other_campaigns };
 }
 
 // ============================================================
@@ -215,8 +240,9 @@ export async function generateDrafts(opts: {
   overrideBody?: string;
   useLlm?: boolean;
   startFresh?: boolean;
-  campaignName?: string;       // which campaign's template to use (default: Outreach)
-  globalDedup?: boolean;       // opt-in: also skip contacts touched in OTHER campaigns
+  campaignName?: string;        // which campaign's template to use (default: Outreach)
+  globalDedup?: boolean;        // opt-in: also skip contacts touched in OTHER campaigns
+  switchCampaign?: boolean;     // NEW DEFAULT (true): delete pending drafts in OTHER campaigns for these contacts before generating here. Result: 1 contact = 1 pending draft at a time.
 }) {
   const sb = createAdminClient();
   const useLlm = opts.useLlm ?? false;
@@ -281,10 +307,33 @@ export async function generateDrafts(opts: {
     return { ok: false, error: "No eligible contacts." };
   }
 
-  // Per-campaign dedup: each campaign is its own funnel, so the same contact
-  // can be pitched on both (e.g. internship outreach + SaaS sales pitch).
-  // Opt-in to global dedup via opts.globalDedup when you don't want a contact
-  // to appear in multiple campaigns simultaneously.
+  // NEW DEFAULT (switchCampaign=true): clear OTHER-campaign pending drafts
+  // for every contact in our candidate pool. Result: 1 contact = 1 pending
+  // draft at a time. Generating for Outreach after the user generated for
+  // SaaS Sales for the same batch will wipe the SaaS Sales drafts.
+  // Set switchCampaign=false to keep the legacy "draft per campaign per
+  // contact" behavior (only useful for true multi-channel pitches).
+  const switchCampaign = opts.switchCampaign ?? true;
+  let cleaned_other_campaigns = 0;
+  if (switchCampaign && contacts.length > 0) {
+    const allContactIds = (contacts as any[]).map(c => c.id);
+    const { data: otherDrafts } = await sb.from("sends")
+      .select("id")
+      .neq("campaign_id", campaign.id)
+      .eq("status", "pending_approval")
+      .in("contact_id", allContactIds);
+    if (otherDrafts && otherDrafts.length > 0) {
+      const ids = otherDrafts.map((d: any) => d.id);
+      await sb.from("approvals").delete().in("send_id", ids);
+      await sb.from("sends").delete().in("id", ids);
+      cleaned_other_campaigns = ids.length;
+    }
+  }
+
+  // Per-campaign dedup: skip contacts already touched in THIS campaign so
+  // we don't double-draft. switchCampaign above already cleared the OTHER
+  // campaigns; this only catches "already has a pending draft on this
+  // campaign". Opt-in opts.globalDedup adds the rare "skip across all" mode.
   const dedupQuery = sb.from("sends").select("contact_id")
     .in("status", ["pending_approval", "approved", "sending", "sent"]);
   if (!opts.globalDedup) dedupQuery.eq("campaign_id", campaign.id);
@@ -351,7 +400,11 @@ export async function generateDrafts(opts: {
 
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, created, failed, total_eligible: pool.length };
+  return {
+    ok: true, created, failed,
+    total_eligible: pool.length,
+    cleaned_other_campaigns,
+  };
 }
 
 // ============================================================
