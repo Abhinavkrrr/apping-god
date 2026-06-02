@@ -451,6 +451,7 @@ export async function regenerateDraftsForBatch(
 ): Promise<{
   ok: boolean;
   contacts?: number;
+  unblocked?: number;
   deleted?: number;
   created?: number;
   campaign?: string;
@@ -464,26 +465,88 @@ export async function regenerateDraftsForBatch(
     .eq("name", cName).single();
   if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
 
-  // 2. Get all contact_ids in this batch
+  // 2. Get all contact_ids + emails in this batch.
+  // CRITICAL: default Supabase query is capped at 1000 rows. Use .range()
+  // to fetch ALL contacts even if batch has >1000. Without this, batches
+  // larger than 1000 silently truncate.
   const { data: batchContacts } = await sb.from("contacts")
-    .select("id").eq("import_batch_id", batchId);
-  const contactIds = (batchContacts ?? []).map((c: any) => c.id);
+    .select("id, email, skip_reason, email_status")
+    .eq("import_batch_id", batchId)
+    .range(0, 49999);   // up to 50K per batch — well beyond realistic
+  const allContacts = (batchContacts ?? []) as any[];
+  const contactIds = allContacts.map(c => c.id);
+  const emails = allContacts.map(c => (c.email || "").toLowerCase()).filter(Boolean);
+
   if (contactIds.length === 0) {
     return { ok: false, error: "No contacts in this batch." };
   }
 
-  // 3. Generate with forceRegenerate so existing drafts get wiped + recreated
-  const r = await generateDraftsForContacts(contactIds, cName, {
-    forceRegenerate: true,
-    switchCampaign: true,
-  });
-  if (!r.ok) return { ok: false, error: r.error };
+  // 3. UNBLOCK bounce-flagged contacts in this batch.
+  // The user explicitly clicked Regenerate — they want drafts for these
+  // contacts. Past bounce flows may have set skip_reason / email_status
+  // on contacts that the user has since fixed (re-imported, corrected
+  // address, whatever). Clear those flags so generateDraftsForContacts
+  // doesn't silently drop them via .is("skip_reason", null) filter.
+  //
+  // We ONLY clear bounce-related flags. We do NOT touch:
+  //   - unsubscribed_at set by user-initiated unsubscribes (manual flag)
+  //   - manual skip_reason values other than 'hard_bounce' / 'soft_bounce'
+  //   - unsubscribes table entries with reason NOT starting with 'bounce_'
+  let unblocked = 0;
+  const flaggedIds = allContacts
+    .filter(c => c.skip_reason === "hard_bounce" || c.skip_reason === "soft_bounce" || c.email_status === "bounced")
+    .map(c => c.id);
+  if (flaggedIds.length > 0) {
+    const { data: cleared } = await sb.from("contacts")
+      .update({ skip_reason: null, email_status: "unverified" })
+      .in("id", flaggedIds)
+      .in("skip_reason", ["hard_bounce", "soft_bounce"])
+      .select("id");
+    unblocked = cleared?.length ?? 0;
+  }
+  // Also remove bounce-only entries from unsubscribes (chunked to avoid
+  // .in() URL overflow on large batches).
+  if (emails.length > 0) {
+    const CHUNK = 250;
+    for (let i = 0; i < emails.length; i += CHUNK) {
+      const chunk = emails.slice(i, i + CHUNK);
+      await sb.from("unsubscribes")
+        .delete()
+        .in("email", chunk)
+        .like("reason", "bounce_%");
+    }
+  }
+
+  // 4. Generate with forceRegenerate. Chunk contactIds since
+  // generateDraftsForContacts also has its own internal .in() queries.
+  let totalCreated = 0;
+  let totalDeleted = 0;
+  const GEN_CHUNK = 500;
+  for (let i = 0; i < contactIds.length; i += GEN_CHUNK) {
+    const chunk = contactIds.slice(i, i + GEN_CHUNK);
+    const r = await generateDraftsForContacts(chunk, cName, {
+      forceRegenerate: true,
+      switchCampaign: true,
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        error: `Chunk ${i}-${i+GEN_CHUNK} failed: ${r.error}`,
+        contacts: contactIds.length, unblocked,
+        created: totalCreated, deleted: totalDeleted,
+        campaign: campaign.name as string,
+      };
+    }
+    totalCreated += r.created ?? 0;
+    totalDeleted += r.force_deleted ?? 0;
+  }
 
   return {
     ok: true,
     contacts: contactIds.length,
-    deleted: r.force_deleted ?? 0,
-    created: r.created ?? 0,
+    unblocked,
+    deleted: totalDeleted,
+    created: totalCreated,
     campaign: campaign.name as string,
   };
 }

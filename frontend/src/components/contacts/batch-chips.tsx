@@ -90,11 +90,15 @@ export function BatchChips({
       const r = await regenerateDraftsForBatch(b.id, campaign.trim());
       setRegenerating(null);
       if (r.ok) {
-        toast.success(
-          `✓ Regenerated for "${b.name}" → ${r.created} draft(s) in ${r.campaign}` +
-          (r.deleted ? ` · wiped ${r.deleted} old draft(s)` : ""),
-          { duration: 8000 }
-        );
+        const parts: string[] = [];
+        parts.push(`✓ Regenerated for "${b.name}"`);
+        parts.push(`${r.created ?? 0} draft(s) created in ${r.campaign}`);
+        if (r.deleted) parts.push(`wiped ${r.deleted} old draft(s)`);
+        if (r.unblocked) parts.push(`unblocked ${r.unblocked} bounce-flagged contact(s)`);
+        if ((r.created ?? 0) < (r.contacts ?? 0)) {
+          parts.push(`${(r.contacts ?? 0) - (r.created ?? 0)} contact(s) still blocked (manual unsubscribe / no email)`);
+        }
+        toast.success(parts.join(" · "), { duration: 12000 });
         router.refresh();
       } else {
         toast.error(r.error ?? "Regenerate failed.");
