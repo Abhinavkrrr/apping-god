@@ -207,9 +207,18 @@ export async function generateDraftsForContacts(
     return { ok: true, created: 0, skipped: contactIds.length, cleaned_other_campaigns };
   }
 
-  const { data: contacts } = await sb.from("contacts")
-    .select("*, companies(*)").in("id", eligibleIds)
-    .is("unsubscribed_at", null).is("skip_reason", null);
+  // PAGINATED fetch — Supabase caps single queries at 1000 rows even
+  // when .in() filter would match more. Page through using .range()
+  // chunks of 500 (smaller because each row also joins companies).
+  const contacts: any[] = [];
+  const FETCH_CHUNK = 500;
+  for (let i = 0; i < eligibleIds.length; i += FETCH_CHUNK) {
+    const idChunk = eligibleIds.slice(i, i + FETCH_CHUNK);
+    const { data: page } = await sb.from("contacts")
+      .select("*, companies(*)").in("id", idChunk)
+      .is("unsubscribed_at", null).is("skip_reason", null);
+    if (page) contacts.push(...page);
+  }
 
   // Build all rows in memory first, then batch-insert in ONE round-trip
   // (was N round-trips × 2 inserts = serial Atlantic latency hell)
@@ -451,7 +460,9 @@ export async function regenerateDraftsForBatch(
 ): Promise<{
   ok: boolean;
   contacts?: number;
-  unblocked?: number;
+  unblocked_skip?: number;
+  unblocked_unsub?: number;
+  unsubscribes_removed?: number;
   deleted?: number;
   created?: number;
   campaign?: string;
@@ -465,15 +476,29 @@ export async function regenerateDraftsForBatch(
     .eq("name", cName).single();
   if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
 
-  // 2. Get all contact_ids + emails in this batch.
-  // CRITICAL: default Supabase query is capped at 1000 rows. Use .range()
-  // to fetch ALL contacts even if batch has >1000. Without this, batches
-  // larger than 1000 silently truncate.
-  const { data: batchContacts } = await sb.from("contacts")
-    .select("id, email, skip_reason, email_status")
-    .eq("import_batch_id", batchId)
-    .range(0, 49999);   // up to 50K per batch — well beyond realistic
-  const allContacts = (batchContacts ?? []) as any[];
+  // 2. PAGINATED fetch of all contacts in this batch.
+  // Supabase enforces a server-side max-rows cap (default 1000). Even
+  // with .range(0, 49999) we get capped at 1000. The ONLY way to fetch
+  // more is to page through with sequential .range(start, end-1) calls.
+  const allContacts: any[] = [];
+  const PAGE = 1000;
+  let offset = 0;
+  while (true) {
+    const { data: page, error: pageErr } = await sb.from("contacts")
+      .select("id, email, skip_reason, email_status, unsubscribed_at")
+      .eq("import_batch_id", batchId)
+      .order("id")   // deterministic ordering for stable pagination
+      .range(offset, offset + PAGE - 1);
+    if (pageErr) {
+      return { ok: false, error: `Contact-fetch page ${offset} failed: ${pageErr.message}` };
+    }
+    if (!page || page.length === 0) break;
+    allContacts.push(...page);
+    if (page.length < PAGE) break;     // last partial page
+    offset += PAGE;
+    if (offset > 50000) break;         // sanity limit; far beyond realistic batch sizes
+  }
+
   const contactIds = allContacts.map(c => c.id);
   const emails = allContacts.map(c => (c.email || "").toLowerCase()).filter(Boolean);
 
@@ -481,39 +506,57 @@ export async function regenerateDraftsForBatch(
     return { ok: false, error: "No contacts in this batch." };
   }
 
-  // 3. UNBLOCK bounce-flagged contacts in this batch.
-  // The user explicitly clicked Regenerate — they want drafts for these
-  // contacts. Past bounce flows may have set skip_reason / email_status
-  // on contacts that the user has since fixed (re-imported, corrected
-  // address, whatever). Clear those flags so generateDraftsForContacts
-  // doesn't silently drop them via .is("skip_reason", null) filter.
+  // 3. NUCLEAR UNBLOCK — when user explicitly clicks Regenerate they
+  // want drafts created for these contacts, period. Clear ALL filters
+  // that would cause generateDraftsForContacts to silently drop them:
   //
-  // We ONLY clear bounce-related flags. We do NOT touch:
-  //   - unsubscribed_at set by user-initiated unsubscribes (manual flag)
-  //   - manual skip_reason values other than 'hard_bounce' / 'soft_bounce'
-  //   - unsubscribes table entries with reason NOT starting with 'bounce_'
-  let unblocked = 0;
-  const flaggedIds = allContacts
-    .filter(c => c.skip_reason === "hard_bounce" || c.skip_reason === "soft_bounce" || c.email_status === "bounced")
-    .map(c => c.id);
-  if (flaggedIds.length > 0) {
-    const { data: cleared } = await sb.from("contacts")
+  //   - skip_reason         → NULL (any value, not just bounce-related)
+  //   - email_status        → 'unverified' (any value, not just 'bounced')
+  //   - unsubscribed_at     → NULL  (yes, even manual unsubs — explicit
+  //                                  user intent at the Regenerate click)
+  //   - unsubscribes table  → delete every entry matching these emails
+  //
+  // Rationale: the user just clicked a button labeled "Regenerate drafts
+  // for batch X". That's explicit intent to bypass any block. If they
+  // wanted to preserve unsub state, they wouldn't be regenerating for
+  // that contact at all.
+  let unblocked_skip = 0;
+  let unblocked_unsub = 0;
+  let unsubscribes_removed = 0;
+
+  // Chunk the contact-update too in case >1000 per call
+  const UPDATE_CHUNK = 500;
+  for (let i = 0; i < contactIds.length; i += UPDATE_CHUNK) {
+    const chunk = contactIds.slice(i, i + UPDATE_CHUNK);
+
+    // Clear skip_reason + email_status (anything that's set gets cleared)
+    const { data: clearedSkip } = await sb.from("contacts")
       .update({ skip_reason: null, email_status: "unverified" })
-      .in("id", flaggedIds)
-      .in("skip_reason", ["hard_bounce", "soft_bounce"])
+      .in("id", chunk)
+      .not("skip_reason", "is", null)
       .select("id");
-    unblocked = cleared?.length ?? 0;
+    unblocked_skip += clearedSkip?.length ?? 0;
+
+    // Clear unsubscribed_at separately (different filter)
+    const { data: clearedUnsub } = await sb.from("contacts")
+      .update({ unsubscribed_at: null })
+      .in("id", chunk)
+      .not("unsubscribed_at", "is", null)
+      .select("id");
+    unblocked_unsub += clearedUnsub?.length ?? 0;
   }
-  // Also remove bounce-only entries from unsubscribes (chunked to avoid
-  // .in() URL overflow on large batches).
+
+  // Remove from unsubscribes table (every reason, since explicit
+  // regenerate intent). Chunked to avoid URL overflow.
   if (emails.length > 0) {
-    const CHUNK = 250;
-    for (let i = 0; i < emails.length; i += CHUNK) {
-      const chunk = emails.slice(i, i + CHUNK);
-      await sb.from("unsubscribes")
+    const EMAIL_CHUNK = 250;
+    for (let i = 0; i < emails.length; i += EMAIL_CHUNK) {
+      const chunk = emails.slice(i, i + EMAIL_CHUNK);
+      const { data: removed } = await sb.from("unsubscribes")
         .delete()
         .in("email", chunk)
-        .like("reason", "bounce_%");
+        .select("email");
+      unsubscribes_removed += removed?.length ?? 0;
     }
   }
 
@@ -532,7 +575,8 @@ export async function regenerateDraftsForBatch(
       return {
         ok: false,
         error: `Chunk ${i}-${i+GEN_CHUNK} failed: ${r.error}`,
-        contacts: contactIds.length, unblocked,
+        contacts: contactIds.length,
+        unblocked_skip, unblocked_unsub, unsubscribes_removed,
         created: totalCreated, deleted: totalDeleted,
         campaign: campaign.name as string,
       };
@@ -544,7 +588,7 @@ export async function regenerateDraftsForBatch(
   return {
     ok: true,
     contacts: contactIds.length,
-    unblocked,
+    unblocked_skip, unblocked_unsub, unsubscribes_removed,
     deleted: totalDeleted,
     created: totalCreated,
     campaign: campaign.name as string,

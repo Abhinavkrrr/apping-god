@@ -100,14 +100,20 @@ export function BatchChips({
       setRegenerating(null);
       if (r.ok) {
         const parts: string[] = [];
-        parts.push(`✓ Regenerated for "${b.name}"`);
-        parts.push(`${r.created ?? 0} draft(s) created in ${r.campaign}`);
+        parts.push(`✓ "${b.name}": ${r.created ?? 0}/${r.contacts ?? 0} drafts in ${r.campaign}`);
         if (r.deleted) parts.push(`wiped ${r.deleted} old draft(s)`);
-        if (r.unblocked) parts.push(`unblocked ${r.unblocked} bounce-flagged contact(s)`);
-        if ((r.created ?? 0) < (r.contacts ?? 0)) {
-          parts.push(`${(r.contacts ?? 0) - (r.created ?? 0)} contact(s) still blocked (manual unsubscribe / no email)`);
+        const totalUnblocked = (r.unblocked_skip ?? 0) + (r.unblocked_unsub ?? 0) + (r.unsubscribes_removed ?? 0);
+        if (totalUnblocked > 0) {
+          const unblockDetail: string[] = [];
+          if (r.unblocked_skip) unblockDetail.push(`${r.unblocked_skip} skip_reason cleared`);
+          if (r.unblocked_unsub) unblockDetail.push(`${r.unblocked_unsub} unsub_at cleared`);
+          if (r.unsubscribes_removed) unblockDetail.push(`${r.unsubscribes_removed} unsubs rows removed`);
+          parts.push(`unblocked: ${unblockDetail.join(", ")}`);
         }
-        toast.success(parts.join(" · "), { duration: 12000 });
+        if ((r.created ?? 0) < (r.contacts ?? 0)) {
+          parts.push(`⚠ ${(r.contacts ?? 0) - (r.created ?? 0)} still missed — likely no email or contact deleted mid-flow`);
+        }
+        toast.success(parts.join(" · "), { duration: 15000 });
         router.refresh();
       } else {
         toast.error(r.error ?? "Regenerate failed.");
