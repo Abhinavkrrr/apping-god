@@ -146,77 +146,101 @@ export async function generateDraftsForContacts(
   if (!seq?.templates) return { ok: false, error: "Master template not found." };
   const template = (seq as any).templates;
 
+  // CHUNK SIZE — every .in(contact_id, ...) here needs to stay under
+  // PostgREST's 8KB URL limit. 36-char UUID + comma/encoding ≈ 40 chars
+  // → 100 IDs ≈ 4KB with comfortable headroom.
+  const ID_CHUNK = 100;
+
   // FORCE REGENERATE: when set (typically from "re-create fresh drafts"
   // checkbox on the import modal), wipe ALL existing pending drafts for
   // these contacts in the target campaign so the dedup-skip below doesn't
   // silently drop them. Result: every contactId in the input gets exactly
-  // 1 fresh pending draft in the target campaign. This is what the user
-  // expects when they re-import a CSV and want all contacts in queue.
+  // 1 fresh pending draft in the target campaign.
   let force_deleted = 0;
   if (opts.forceRegenerate) {
-    const { data: doomed } = await sb.from("sends")
-      .select("id")
-      .eq("campaign_id", campaign.id)
-      .eq("status", "pending_approval")
-      .in("contact_id", contactIds);
-    if (doomed && doomed.length > 0) {
-      const ids = doomed.map((d: any) => d.id);
-      await sb.from("approvals").delete().in("send_id", ids);
-      await sb.from("sends").delete().in("id", ids);
-      force_deleted = ids.length;
+    const doomedIds: string[] = [];
+    for (let i = 0; i < contactIds.length; i += ID_CHUNK) {
+      const chunk = contactIds.slice(i, i + ID_CHUNK);
+      const { data: doomed } = await sb.from("sends")
+        .select("id")
+        .eq("campaign_id", campaign.id)
+        .eq("status", "pending_approval")
+        .in("contact_id", chunk);
+      if (doomed) doomedIds.push(...doomed.map((d: any) => d.id));
+    }
+    if (doomedIds.length > 0) {
+      // Chunk the deletes too (send_id / id .in() filters hit same URL cap)
+      for (let i = 0; i < doomedIds.length; i += ID_CHUNK) {
+        const chunk = doomedIds.slice(i, i + ID_CHUNK);
+        await sb.from("approvals").delete().in("send_id", chunk);
+        await sb.from("sends").delete().in("id", chunk);
+      }
+      force_deleted = doomedIds.length;
     }
   }
 
-  // NEW DEFAULT (switchCampaign=true): treat each contact as having ONE
-  // active campaign at a time. If a contact has pending drafts in OTHER
-  // campaigns when we go to generate here, those get deleted first so
-  // they don't end up with 2 or 3 simultaneous pending pitches.
-  // Set switchCampaign=false to keep the old "draft per campaign per
-  // contact" behavior (rare — only useful for true multi-channel pitches
-  // where you genuinely want the same contact in both Outreach AND SaaS
-  // queues at the same time).
+  // SWITCH CAMPAIGN: delete drafts in OTHER campaigns for these contacts
+  // so each contact has at most 1 pending draft across all campaigns.
   const switchCampaign = opts.switchCampaign ?? true;
   let cleaned_other_campaigns = 0;
   if (switchCampaign) {
-    const { data: otherDrafts } = await sb.from("sends")
-      .select("id")
-      .neq("campaign_id", campaign.id)
-      .eq("status", "pending_approval")
-      .in("contact_id", contactIds);
-    if (otherDrafts && otherDrafts.length > 0) {
-      const ids = otherDrafts.map((d: any) => d.id);
-      await sb.from("approvals").delete().in("send_id", ids);
-      await sb.from("sends").delete().in("id", ids);
-      cleaned_other_campaigns = ids.length;
+    const otherIds: string[] = [];
+    for (let i = 0; i < contactIds.length; i += ID_CHUNK) {
+      const chunk = contactIds.slice(i, i + ID_CHUNK);
+      const { data: otherDrafts } = await sb.from("sends")
+        .select("id")
+        .neq("campaign_id", campaign.id)
+        .eq("status", "pending_approval")
+        .in("contact_id", chunk);
+      if (otherDrafts) otherIds.push(...otherDrafts.map((d: any) => d.id));
+    }
+    if (otherIds.length > 0) {
+      for (let i = 0; i < otherIds.length; i += ID_CHUNK) {
+        const chunk = otherIds.slice(i, i + ID_CHUNK);
+        await sb.from("approvals").delete().in("send_id", chunk);
+        await sb.from("sends").delete().in("id", chunk);
+      }
+      cleaned_other_campaigns = otherIds.length;
     }
   }
 
-  // Per-campaign dedup: skip contacts already touched in THIS campaign so
-  // we don't double-draft. switchCampaign above already cleared other
-  // campaigns; this only catches "already pitched on this campaign".
-  // Opt-in opts.globalDedup adds the rare "skip across all campaigns" mode.
-  const dedupQuery = sb.from("sends").select("contact_id")
-    .in("status", ["pending_approval", "approved", "sending", "sent"])
-    .in("contact_id", contactIds);
-  if (!opts.globalDedup) dedupQuery.eq("campaign_id", campaign.id);
-  const { data: existing } = await dedupQuery;
-  const touched = new Set((existing ?? []).map((e: any) => e.contact_id));
+  // Per-campaign dedup: skip contacts already touched in THIS campaign.
+  // CHUNKED to avoid URL overflow when contactIds is large.
+  const touched = new Set<string>();
+  for (let i = 0; i < contactIds.length; i += ID_CHUNK) {
+    const chunk = contactIds.slice(i, i + ID_CHUNK);
+    const dedupQuery = sb.from("sends").select("contact_id")
+      .in("status", ["pending_approval", "approved", "sending", "sent"])
+      .in("contact_id", chunk);
+    if (!opts.globalDedup) dedupQuery.eq("campaign_id", campaign.id);
+    const { data: existing } = await dedupQuery;
+    for (const e of (existing ?? []) as any[]) {
+      if (e.contact_id) touched.add(e.contact_id);
+    }
+  }
 
   const eligibleIds = contactIds.filter(id => !touched.has(id));
   if (eligibleIds.length === 0) {
-    return { ok: true, created: 0, skipped: contactIds.length, cleaned_other_campaigns };
+    return {
+      ok: true, created: 0, skipped: contactIds.length,
+      cleaned_other_campaigns, force_deleted,
+    };
   }
 
   // PAGINATED fetch — Supabase caps single queries at 1000 rows even
-  // when .in() filter would match more. Page through using .range()
-  // chunks of 500 (smaller because each row also joins companies).
+  // when .in() filter would match more. Chunk size of 100 keeps the
+  // .in() URL well under 8KB limit (was 500 → 20KB which silently
+  // truncated and returned 0 rows for some chunks).
   const contacts: any[] = [];
-  const FETCH_CHUNK = 500;
-  for (let i = 0; i < eligibleIds.length; i += FETCH_CHUNK) {
-    const idChunk = eligibleIds.slice(i, i + FETCH_CHUNK);
-    const { data: page } = await sb.from("contacts")
+  for (let i = 0; i < eligibleIds.length; i += ID_CHUNK) {
+    const idChunk = eligibleIds.slice(i, i + ID_CHUNK);
+    const { data: page, error: fetchErr } = await sb.from("contacts")
       .select("*, companies(*)").in("id", idChunk)
       .is("unsubscribed_at", null).is("skip_reason", null);
+    if (fetchErr) {
+      console.error(`[generate] contact fetch chunk ${i} failed:`, fetchErr);
+      continue;
+    }
     if (page) contacts.push(...page);
   }
 
@@ -244,15 +268,30 @@ export async function generateDraftsForContacts(
     });
   }
 
+  // CHUNKED INSERT — each draft row has a fully-rendered HTML email
+  // (~5-10KB). 100 rows ≈ 500KB-1MB POST body, safely under 1MB limit.
+  // Without chunking, a 500-row insert blows past the body cap and
+  // either errors or silently truncates → user gets way fewer drafts
+  // than they asked for. This is what happened in the 1249-contact
+  // → 410-draft case.
   let created = 0;
   if (sendRows.length > 0) {
-    const { data: ins, error } = await sb.from("sends").insert(sendRows).select("id");
-    if (error) return { ok: false, error: error.message };
-    created = ins?.length ?? 0;
-    if (created > 0) {
-      await sb.from("approvals").insert(
-        (ins ?? []).map((r: any) => ({ send_id: r.id, status: "pending" }))
-      );
+    const INSERT_CHUNK = 100;
+    for (let i = 0; i < sendRows.length; i += INSERT_CHUNK) {
+      const chunk = sendRows.slice(i, i + INSERT_CHUNK);
+      const { data: ins, error } = await sb.from("sends").insert(chunk).select("id");
+      if (error) {
+        console.error(`[generate] sends.insert chunk ${i} failed:`, error);
+        continue;  // try the next chunk; partial success beats total failure
+      }
+      const insertedIds = (ins ?? []).map((r: any) => r.id);
+      created += insertedIds.length;
+      if (insertedIds.length > 0) {
+        // Approvals insert also chunked to match
+        await sb.from("approvals").insert(
+          insertedIds.map((id: string) => ({ send_id: id, status: "pending" }))
+        );
+      }
     }
   }
 
@@ -415,18 +454,27 @@ export async function generateDrafts(opts: {
     });
   }
 
-  // Phase 3: batch insert sends + approvals (2 round-trips total instead of 2N)
+  // Phase 3: CHUNKED batch insert. Each draft has ~5-10KB rendered HTML;
+  // 100 rows ≈ 500KB-1MB POST body. Without chunking, 500+ rows blow
+  // past the body cap and silently truncate. This is the same fix as
+  // generateDraftsForContacts (see commit history).
   let created = 0, failed = 0;
   if (sendRows.length > 0) {
-    const { data: ins, error } = await sb.from("sends").insert(sendRows).select("id");
-    if (error) {
-      failed = sendRows.length;
-    } else {
-      created = ins?.length ?? 0;
-      failed = sendRows.length - created;
-      if (created > 0) {
+    const INSERT_CHUNK = 100;
+    for (let i = 0; i < sendRows.length; i += INSERT_CHUNK) {
+      const chunk = sendRows.slice(i, i + INSERT_CHUNK);
+      const { data: ins, error } = await sb.from("sends").insert(chunk).select("id");
+      if (error) {
+        console.error(`[generateDrafts] sends.insert chunk ${i} failed:`, error);
+        failed += chunk.length;
+        continue;
+      }
+      const insertedIds = (ins ?? []).map((r: any) => r.id);
+      created += insertedIds.length;
+      failed += chunk.length - insertedIds.length;
+      if (insertedIds.length > 0) {
         await sb.from("approvals").insert(
-          (ins ?? []).map((r: any) => ({ send_id: r.id, status: "pending" }))
+          insertedIds.map((id: string) => ({ send_id: id, status: "pending" }))
         );
       }
     }
