@@ -8,6 +8,7 @@ import { CsvUploadModal } from "@/components/contacts/csv-upload-modal";
 import { ContactActions } from "@/components/contacts/contact-actions";
 import { BatchChips } from "@/components/contacts/batch-chips";
 import { listBatches } from "@/app/actions/contacts";
+import { listActiveCampaignTemplates } from "@/app/actions/send";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -78,7 +79,12 @@ export default async function ContactsPage({
 }) {
   const params = await searchParams;
   const batchFilter = params.batch ?? "__all__";
-  const { contacts, total, companyCount, batches } = await loadContacts(batchFilter);
+  const [loaded, campaignTemplates] = await Promise.all([
+    loadContacts(batchFilter),
+    listActiveCampaignTemplates(),
+  ]);
+  const { contacts, total, companyCount, batches } = loaded;
+  const campaigns = campaignTemplates.map(c => c.campaign_name);
   const activeBatchName =
     batchFilter === "__all__" ? null
     : batchFilter === "__none__" ? "Untagged"
@@ -116,6 +122,7 @@ export default async function ContactsPage({
               activeId={batchFilter}
               totalContacts={total}
               noBatchCount={contacts.filter(c => !c.import_batch_id).length}
+              campaigns={campaigns}
             />
           </CardContent>
         </Card>

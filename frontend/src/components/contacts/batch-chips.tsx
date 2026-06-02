@@ -27,11 +27,13 @@ export function BatchChips({
   activeId,
   totalContacts,
   noBatchCount,
+  campaigns = [],
 }: {
   batches: BatchInfo[];
   activeId: string;       // "__all__" | "__none__" | batch UUID
   totalContacts: number;
   noBatchCount: number;
+  campaigns?: string[];   // active campaign names for the regen dropdown
 }) {
   const router = useRouter();
   const [pendingDelete, setPendingDelete] = useState<BatchInfo | null>(null);
@@ -40,6 +42,12 @@ export function BatchChips({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  // ── Regenerate dialog state ───────────────────────────────────
+  // Replaces the prompt() flow which was typo-prone (user typed
+  // "Outreach" once when they meant "AI Builder Internship").
+  const [pendingRegen, setPendingRegen] = useState<BatchInfo | null>(null);
+  const [regenCampaign, setRegenCampaign] = useState<string>(campaigns[0] ?? "Outreach");
 
   async function openConfirm(b: BatchInfo) {
     setPendingDelete(b);
@@ -73,18 +81,19 @@ export function BatchChips({
 
   // ── Regenerate state ──────────────────────────────────────────
   const [regenerating, setRegenerating] = useState<string | null>(null);
-  function handleRegenerate(b: BatchInfo) {
-    const campaign = prompt(
-      `Regenerate drafts for batch "${b.name}" (${b.contact_count} contacts)?\n\n` +
-      `This will DELETE all existing pending drafts for these contacts (in any campaign) and create fresh ones in the campaign you pick below.\n\n` +
-      `Type the campaign name exactly:\n` +
-      `  • Outreach\n` +
-      `  • SaaS Sales\n` +
-      `  • AI Builder Internship\n\n` +
-      `(Cancel = don't regenerate)`,
-      "Outreach"
-    );
+
+  function openRegenerate(b: BatchInfo) {
+    setPendingRegen(b);
+    // Reset to first campaign every time so user makes an explicit choice
+    setRegenCampaign(campaigns[0] ?? "Outreach");
+  }
+
+  function handleRegenerate() {
+    if (!pendingRegen) return;
+    const b = pendingRegen;
+    const campaign = regenCampaign;
     if (!campaign?.trim()) return;
+    setPendingRegen(null);
     setRegenerating(b.id);
     startTransition(async () => {
       const r = await regenerateDraftsForBatch(b.id, campaign.trim());
@@ -128,7 +137,7 @@ export function BatchChips({
             </Link>
             <button
               type="button"
-              onClick={() => handleRegenerate(b)}
+              onClick={() => openRegenerate(b)}
               disabled={regenerating !== null || b.contact_count === 0}
               className="h-[22px] px-1.5 border border-l-0 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-900 transition-colors disabled:opacity-40"
               title={`Regenerate drafts for batch "${b.name}" — deletes existing pending drafts for these ${b.contact_count} contacts (any campaign) and creates fresh ones`}
@@ -165,6 +174,59 @@ export function BatchChips({
           </Link>
         )}
       </div>
+
+      {/* Regenerate dialog — campaign picker via dropdown, no typing */}
+      <Dialog open={pendingRegen !== null} onOpenChange={(o) => !o && setPendingRegen(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-emerald-700">
+              <Sparkles className="h-5 w-5" /> Regenerate drafts for "{pendingRegen?.name}"
+            </DialogTitle>
+            <DialogDescription>
+              For every contact in this batch ({pendingRegen?.contact_count ?? 0} contacts):
+              <br />• Delete any existing pending draft (in any campaign)
+              <br />• Unblock bounce-flagged contacts (only bounce-related; manual unsubscribes preserved)
+              <br />• Create a fresh draft in the campaign picked below
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2 py-2">
+            <label className="text-sm font-medium text-slate-700">Target campaign</label>
+            <select
+              value={regenCampaign}
+              onChange={(e) => setRegenCampaign(e.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              autoFocus
+            >
+              {campaigns.length === 0 && <option value="Outreach">Outreach (default)</option>}
+              {campaigns.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              All {pendingRegen?.contact_count ?? 0} contacts in this batch will get a fresh
+              first-touch draft in <strong>{regenCampaign}</strong>. Any drafts they currently
+              have in other campaigns will be deleted (switch-campaign mode).
+            </p>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <DialogClose asChild>
+              <Button variant="ghost" disabled={isPending}>
+                <X className="h-4 w-4 mr-1" /> Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              onClick={handleRegenerate}
+              disabled={isPending || !regenCampaign}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              <Sparkles className="h-4 w-4 mr-1" />
+              Regenerate {pendingRegen?.contact_count ?? 0} drafts in {regenCampaign}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={pendingDelete !== null} onOpenChange={(o) => !o && setPendingDelete(null)}>
         <DialogContent className="max-w-md">
