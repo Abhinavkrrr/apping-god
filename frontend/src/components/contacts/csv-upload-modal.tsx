@@ -294,20 +294,20 @@ export function CsvUploadModal() {
   function handleImport() {
     if (rows.length === 0) { toast.error("No rows parsed — pick a CSV file first."); return; }
     if (!batchLabel.trim()) { toast.error("Give this batch a name."); return; }
-    if (!confirm(`Import ${rows.length} contacts under batch "${batchLabel.trim()}"?\n\nDuplicate emails will be UPDATED (new batch tag added).`)) return;
+    if (!confirm(`Import ${rows.length} contacts under batch "${batchLabel.trim()}"?\n\nDuplicate emails will be UPDATED and re-tagged to this batch.`)) return;
     startTransition(async () => {
-      toast.info(`Importing ${rows.length}... this may take ${Math.max(5, Math.ceil(rows.length * 0.1))}s.`);
+      toast.info(`Importing ${rows.length}... usually 2-5s.`);
       try {
         const r = await bulkImportContacts(rows, batchLabel.trim());
         if (r.ok) {
           const parts: string[] = [];
           if (r.imported > 0) parts.push(`✓ ${r.imported} new`);
-          if (r.updated > 0) parts.push(`↻ ${r.updated} updated`);
-          if (r.failed > 0) parts.push(`✗ ${r.failed} failed`);
-          toast.success(parts.join(" · ") || "Done.");
+          if (r.updated > 0) parts.push(`↻ ${r.updated} re-tagged to this batch`);
+          if (r.failed > 0) parts.push(`✗ ${r.failed} skipped (bounced / no email)`);
+          toast.success(parts.join(" · ") || "Done.", { duration: 6000 });
           if (r.failed > 0 && r.sample_errors?.length) {
             console.error("Import failures:", r.sample_errors);
-            toast.warning(`First error: ${r.sample_errors[0]}`);
+            toast.warning(`First skip reason: ${r.sample_errors[0]}`, { duration: 8000 });
           }
 
           // Auto-generate drafts for these contacts so they appear in Approve queue immediately
@@ -315,7 +315,27 @@ export function CsvUploadModal() {
             toast.info(`Generating drafts for ${r.contact_ids.length} contact(s)…`);
             const g = await generateDraftsForContacts(r.contact_ids);
             if (g.ok) {
-              toast.success(`✓ ${g.created} new draft(s) in Approve queue${g.skipped ? ` · ${g.skipped} already had drafts` : ""}`);
+              // Be MUCH louder about partial-success scenarios so user
+              // understands why /approve count might not equal input.
+              const created = g.created ?? 0;
+              const skipped = g.skipped ?? 0;
+              const total = created + skipped;
+              if (skipped > 0 && created > 0) {
+                toast.success(
+                  `✓ Created ${created} new drafts.\n` +
+                  `↻ ${skipped} contacts already had a pending draft in this campaign (untouched).\n` +
+                  `Total in this batch's chip on /approve: ${total}.`,
+                  { duration: 12000 }
+                );
+              } else if (skipped > 0 && created === 0) {
+                toast.warning(
+                  `↻ All ${skipped} contacts already had drafts. Nothing new created.\n` +
+                  `To regenerate fresh drafts, delete the existing pending drafts first (use the batch chip's red trash icon on /contacts).`,
+                  { duration: 12000 }
+                );
+              } else {
+                toast.success(`✓ Created ${created} draft${created === 1 ? "" : "s"} in Approve queue.`, { duration: 6000 });
+              }
             } else {
               toast.warning(`Drafts skipped: ${g.error}`);
             }

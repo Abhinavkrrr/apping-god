@@ -268,6 +268,13 @@ export async function bulkImportContacts(
           ...(company_id ? { company_id } : {}),
           ...(r.title?.trim() ? { title: r.title.trim() } : {}),
           ...(r.linkedin_url?.trim() ? { linkedin_url: r.linkedin_url.trim() } : {}),
+          // Re-tag the contact to the current batch. The user's mental
+          // model is "this import owns these contacts" — without this
+          // line, re-importing the same email under a new batch label
+          // leaves the contact pointing at its OLD batch, so the new
+          // batch chip in /approve undercounts. (Was previously skipped
+          // here to "preserve history" but that's the wrong default.)
+          ...(batchId ? { import_batch_id: batchId } : {}),
           custom_fields: Object.keys(mergedCustom).length > 0 ? mergedCustom : null,
         },
       });
