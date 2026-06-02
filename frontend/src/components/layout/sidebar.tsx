@@ -45,10 +45,7 @@ export function Sidebar() {
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-900 text-white">
           <Zap className="h-4 w-4" />
         </div>
-        <div>
-          <div className="text-sm font-semibold text-slate-900">DingDing</div>
-          <div className="text-xs text-slate-500">cold outreach</div>
-        </div>
+        <div className="text-sm font-semibold text-slate-900">DingDing</div>
       </div>
 
       <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto">

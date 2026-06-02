@@ -6,7 +6,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DingDing — Cold Outreach Dashboard",
+  title: "DingDing",
   description: "Automated, personalized job & internship outreach.",
 };
 
