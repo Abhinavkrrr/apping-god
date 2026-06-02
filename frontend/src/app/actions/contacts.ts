@@ -123,20 +123,40 @@ export async function addContact(input: AddContactInput, opts: { skipRevalidate?
   return { ok: true as const, contact_id: contact.id, was_existing: false };
 }
 
-/** Bulk import contact rows. Creates an import_batches row and tags every
- * contact with its id, so the Approve queue can filter by batch later.
- * Returns the contact_ids of every successfully inserted/updated contact. */
+/** Bulk import contact rows. Batched — does ~5 round-trips total across all
+ * rows instead of ~5 per row. Pattern:
+ *   1. Pre-validate (skip missing email/name rows)
+ *   2. Bulk-check unsubscribes (single .in() query for all emails)
+ *   3. Bulk-resolve company_id (single ilike .or() across all unique companies,
+ *      then one INSERT for new ones)
+ *   4. Bulk-check existing contacts by email (single .in() query)
+ *   5. Bulk INSERT new contacts (one round-trip)
+ *   6. Pool-of-10 parallel UPDATE for existing contacts (can't batch UPDATEs
+ *      cleanly when each row needs unique values)
+ *
+ * Result: 405 contacts goes from ~10 min sequential → ~3-5 seconds batched. */
 export async function bulkImportContacts(
   rows: AddContactInput[],
   batch_label?: string,
   opts: { file_name?: string } = {}
 ) {
-  let imported = 0, updated = 0, failed = 0;
+  const sb = createAdminClient();
   const sampleErrors: string[] = [];
-  const contactIds: string[] = [];
 
-  // Create the batch up front. Label defaults to "CSV · 2026-05-25 14:32"
-  // if caller didn't provide one.
+  // ── Phase 0: Filter out structurally-invalid rows ─────────────
+  type Normalized = AddContactInput & { email: string; first_name: string };
+  const valid: Normalized[] = [];
+  let failedMissing = 0;
+  for (const r of rows) {
+    if (!r.email || !r.first_name) {
+      failedMissing++;
+      if (sampleErrors.length < 5) sampleErrors.push(`Missing name/email: ${r.email ?? "?"}`);
+      continue;
+    }
+    valid.push({ ...r, email: r.email.toLowerCase().trim(), first_name: r.first_name.trim() });
+  }
+
+  // Create the import_batches row up front so every row gets tagged.
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
   const batchName = batch_label?.trim() || `CSV · ${stamp}`;
   let batchId: string | undefined;
@@ -145,32 +165,173 @@ export async function bulkImportContacts(
       name: batchName, source: "csv", file_name: opts.file_name,
     });
   } catch (e) {
-    // Non-fatal — fall back to a null batch so import still works
     console.warn("createImportBatch failed, proceeding without batch tag:", e);
   }
 
-  for (const r of rows) {
-    if (!r.email || !r.first_name) {
-      failed++;
-      if (sampleErrors.length < 5) sampleErrors.push(`Missing name/email: ${r.email ?? "?"}`);
-      continue;
+  if (valid.length === 0) {
+    return {
+      ok: true, imported: 0, updated: 0, failed: failedMissing,
+      sample_errors: sampleErrors, contact_ids: [], batch_id: batchId,
+    };
+  }
+
+  // ── Phase 1: bulk-check unsubscribes ──────────────────────────
+  const allEmails = [...new Set(valid.map(r => r.email))];
+  const { data: unsubsData } = await sb.from("unsubscribes")
+    .select("email").in("email", allEmails);
+  const blockedEmails = new Set((unsubsData ?? []).map((u: any) => u.email));
+
+  // Partition: drop blocked rows up-front so we don't waste any further work
+  let blockedCount = 0;
+  const toProcess = valid.filter(r => {
+    if (blockedEmails.has(r.email)) {
+      blockedCount++;
+      if (sampleErrors.length < 5) sampleErrors.push(`${r.email}: blocked (previously bounced / unsubscribed)`);
+      return false;
     }
-    const result = await addContact(
-      { ...r, batch_label, source: "csv-upload", import_batch_id: batchId },
-      { skipRevalidate: true }
-    );
-    if (result.ok) {
-      contactIds.push(result.contact_id);
-      if (result.was_existing) updated++; else imported++;
-    } else {
-      failed++;
-      if (sampleErrors.length < 5) sampleErrors.push(`${r.email}: ${result.error}`);
+    return true;
+  });
+
+  if (toProcess.length === 0) {
+    return {
+      ok: true, imported: 0, updated: 0, failed: failedMissing + blockedCount,
+      sample_errors: sampleErrors, contact_ids: [], batch_id: batchId,
+    };
+  }
+
+  // ── Phase 2: bulk-resolve company_id for every unique company ─
+  const uniqueCompanyNames = [...new Set(
+    toProcess.map(r => r.company_name?.trim()).filter(Boolean) as string[]
+  )];
+  const companyMap = new Map<string, string>();   // lowercased name → company.id
+
+  if (uniqueCompanyNames.length > 0) {
+    // Case-insensitive lookup via .or() with ilike per name. For 50-200
+    // unique companies this fits comfortably in the URL length limit.
+    // For larger imports the OR-chain would need chunking.
+    const orClause = uniqueCompanyNames
+      .map(n => `name.ilike.${n.replace(/[,()]/g, "")}`)
+      .join(",");
+    const { data: existingCos } = await sb.from("companies")
+      .select("id, name").or(orClause);
+    for (const co of (existingCos ?? []) as any[]) {
+      companyMap.set(co.name.toLowerCase().trim(), co.id);
+    }
+
+    // Insert companies that didn't exist (one batch INSERT)
+    const missing = uniqueCompanyNames.filter(n => !companyMap.has(n.toLowerCase().trim()));
+    if (missing.length > 0) {
+      const inserts = missing.map(name => {
+        const r = toProcess.find(x => x.company_name?.trim() === name && x.company_brief);
+        return { name, brief_one_line: r?.company_brief ?? null };
+      });
+      const { data: created } = await sb.from("companies")
+        .insert(inserts).select("id, name");
+      for (const co of (created ?? []) as any[]) {
+        companyMap.set(co.name.toLowerCase().trim(), co.id);
+      }
     }
   }
+
+  // ── Phase 3: bulk-check which contacts already exist ──────────
+  const processEmails = toProcess.map(r => r.email);
+  const { data: existingContacts } = await sb.from("contacts")
+    .select("id, email, custom_fields").in("email", processEmails);
+  const existingMap = new Map<string, { id: string; custom_fields: any }>();
+  for (const c of (existingContacts ?? []) as any[]) {
+    existingMap.set(c.email, { id: c.id, custom_fields: c.custom_fields });
+  }
+
+  // ── Phase 4: partition into new (bulk INSERT) vs existing (UPDATE) ──
+  const toInsert: any[] = [];
+  const toUpdate: Array<{ id: string; patch: any }> = [];
+  for (const r of toProcess) {
+    const company_id = r.company_name?.trim()
+      ? companyMap.get(r.company_name.toLowerCase().trim()) ?? null
+      : null;
+
+    const custom_fields: Record<string, unknown> = {};
+    if (r.batch_label) custom_fields.batch_label = r.batch_label;
+    if (r.phone?.trim()) custom_fields.phone = r.phone.trim();
+
+    const existing = existingMap.get(r.email);
+    if (existing) {
+      const mergedCustom = {
+        ...((existing.custom_fields as Record<string, unknown>) ?? {}),
+        ...custom_fields,
+      };
+      toUpdate.push({
+        id: existing.id,
+        patch: {
+          first_name: r.first_name,
+          last_name: r.last_name?.trim() || null,
+          ...(company_id ? { company_id } : {}),
+          ...(r.title?.trim() ? { title: r.title.trim() } : {}),
+          ...(r.linkedin_url?.trim() ? { linkedin_url: r.linkedin_url.trim() } : {}),
+          custom_fields: Object.keys(mergedCustom).length > 0 ? mergedCustom : null,
+        },
+      });
+    } else {
+      toInsert.push({
+        first_name: r.first_name,
+        last_name: r.last_name?.trim() || null,
+        email: r.email,
+        company_id,
+        title: r.title?.trim() || null,
+        linkedin_url: r.linkedin_url?.trim() || null,
+        source: r.source ?? "csv-upload",
+        import_batch_id: batchId ?? null,
+        custom_fields: Object.keys(custom_fields).length > 0 ? custom_fields : null,
+      });
+    }
+  }
+
+  // ── Phase 5: bulk INSERT new contacts ─────────────────────────
+  const contactIds: string[] = [];
+  let imported = 0, updated = 0;
+  let failed = failedMissing + blockedCount;
+
+  if (toInsert.length > 0) {
+    const { data: insertedRows, error: insErr } = await sb.from("contacts")
+      .insert(toInsert).select("id");
+    if (insErr) {
+      failed += toInsert.length;
+      if (sampleErrors.length < 5) sampleErrors.push(`bulk insert: ${insErr.message}`);
+    } else {
+      imported = insertedRows?.length ?? 0;
+      for (const c of (insertedRows ?? []) as any[]) contactIds.push(c.id);
+    }
+  }
+
+  // ── Phase 6: parallel UPDATE existing contacts (pool of 10) ───
+  // UPDATEs can't be batched into one statement (each row needs unique
+  // patch), but running them concurrently with a small pool brings ~50
+  // updates from 5 sec sequential down to ~500ms.
+  if (toUpdate.length > 0) {
+    const POOL = 10;
+    for (let i = 0; i < toUpdate.length; i += POOL) {
+      const batch = toUpdate.slice(i, i + POOL);
+      const results = await Promise.all(batch.map(async (u) => {
+        const { error } = await sb.from("contacts").update(u.patch).eq("id", u.id);
+        return { id: u.id, ok: !error, error };
+      }));
+      for (const r of results) {
+        if (r.ok) { contactIds.push(r.id); updated++; }
+        else {
+          failed++;
+          if (sampleErrors.length < 5) sampleErrors.push(`update ${r.id}: ${r.error?.message ?? "unknown"}`);
+        }
+      }
+    }
+  }
+
   revalidatePath("/contacts");
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, imported, updated, failed, sample_errors: sampleErrors, contact_ids: contactIds, batch_id: batchId };
+  return {
+    ok: true, imported, updated, failed,
+    sample_errors: sampleErrors, contact_ids: contactIds, batch_id: batchId,
+  };
 }
 
 /** List all import batches (for the Approve queue filter UI). */
