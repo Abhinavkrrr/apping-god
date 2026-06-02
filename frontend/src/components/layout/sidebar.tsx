@@ -46,7 +46,7 @@ export function Sidebar() {
           <Zap className="h-4 w-4" />
         </div>
         <div>
-          <div className="text-sm font-semibold text-slate-900">Apping God</div>
+          <div className="text-sm font-semibold text-slate-900">DingDing</div>
           <div className="text-xs text-slate-500">cold outreach</div>
         </div>
       </div>

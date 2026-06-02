@@ -38,7 +38,7 @@ export default function LoginPage() {
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-md bg-slate-900 text-white">
             <Zap className="h-5 w-5" />
           </div>
-          <CardTitle>Apping God</CardTitle>
+          <CardTitle>DingDing</CardTitle>
           <CardDescription>Sign in with your email to continue.</CardDescription>
         </CardHeader>
         <CardContent>
