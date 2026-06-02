@@ -726,13 +726,55 @@ export async function sendSelectedPending(sendIds: string[]) {
 async function sendPendingByIds(sendIds: string[] | undefined) {
   const sb = createAdminClient();
 
-  let q = sb.from("sends").select(`id, contacts(email, unsubscribed_at)`)
-    .eq("status", "pending_approval");
-  if (sendIds && sendIds.length > 0) q = q.in("id", sendIds);
+  // CHUNKED .in() lookup. PostgREST URL limit is ~8KB. A UUID is 36 chars
+  // plus comma/encoding overhead ≈ 40 chars in the URL. 200 UUIDs ≈ 8KB,
+  // so 100 per chunk keeps us safely under the limit with headroom.
+  // Without this chunking, "Send selected (410)" silently truncated and
+  // returned 0 rows → user saw "No pending drafts to send" despite having
+  // 410 valid selections.
+  const SELECT_CHUNK = 100;
+  let pending: any[] = [];
+  if (sendIds && sendIds.length > 0) {
+    for (let i = 0; i < sendIds.length; i += SELECT_CHUNK) {
+      const chunk = sendIds.slice(i, i + SELECT_CHUNK);
+      const { data: page, error } = await sb.from("sends")
+        .select(`id, contacts(email, unsubscribed_at)`)
+        .eq("status", "pending_approval")
+        .in("id", chunk);
+      if (error) {
+        console.error(`[send] SELECT chunk ${i} failed:`, error);
+        return { ok: false, error: `Lookup failed: ${error.message}` };
+      }
+      if (page) pending.push(...page);
+    }
+  } else {
+    // "Send ALL pending" path — no IDs to chunk, but still need pagination
+    // because Supabase caps results at 1000. Page through with .range().
+    const PAGE = 1000;
+    let offset = 0;
+    while (true) {
+      const { data: page, error } = await sb.from("sends")
+        .select(`id, contacts(email, unsubscribed_at)`)
+        .eq("status", "pending_approval")
+        .order("id")
+        .range(offset, offset + PAGE - 1);
+      if (error) {
+        console.error(`[send] paginated SELECT offset ${offset} failed:`, error);
+        return { ok: false, error: `Lookup failed: ${error.message}` };
+      }
+      if (!page || page.length === 0) break;
+      pending.push(...page);
+      if (page.length < PAGE) break;
+      offset += PAGE;
+      if (offset > 100_000) break;  // sanity guard
+    }
+  }
 
-  const { data: pending } = await q;
   if (!pending || pending.length === 0) {
-    return { ok: false, error: "No pending drafts to send." };
+    return {
+      ok: false,
+      error: `No pending drafts to send. ${sendIds?.length ? `(Checked ${sendIds.length} selected IDs — none were in pending_approval state. They may have already been sent, scheduled, or skipped.)` : ""}`,
+    };
   }
 
   // Partition: contacts with no email or already unsubscribed get auto-skipped.
@@ -747,30 +789,42 @@ async function sendPendingByIds(sendIds: string[] | undefined) {
   const nowIso = new Date().toISOString();
 
   // Bulk-mark the un-sendable ones (no email / unsubscribed) — kept as an
-  // audit trail of why they weren't sent.
+  // audit trail of why they weren't sent. CHUNKED same as SELECT.
+  const WRITE_CHUNK = 100;
   if (skipIds.length > 0) {
-    await sb.from("sends").update({
-      status: "skipped",
-      failure_reason: "Contact has no email or has unsubscribed",
-    }).in("id", skipIds);
-    await sb.from("approvals").update({ status: "skipped" }).in("send_id", skipIds);
+    for (let i = 0; i < skipIds.length; i += WRITE_CHUNK) {
+      const chunk = skipIds.slice(i, i + WRITE_CHUNK);
+      await sb.from("sends").update({
+        status: "skipped",
+        failure_reason: "Contact has no email or has unsubscribed",
+      }).in("id", chunk);
+      await sb.from("approvals").update({ status: "skipped" }).in("send_id", chunk);
+    }
   }
 
   // Bulk-queue the sendable ones with scheduled_at = NOW so the cloud
   // dispatcher picks them up on its next 15-min tick. Atomic via the
   // status='pending_approval' filter — only flips drafts that haven't
-  // already been claimed by something else.
+  // already been claimed by something else. CHUNKED.
   let queued = 0;
   if (queueIds.length > 0) {
-    const { data: claimed } = await sb.from("sends").update({
-      status: "approved",
-      scheduled_at: nowIso,
-    }).in("id", queueIds).eq("status", "pending_approval").select("id");
-    queued = claimed?.length ?? 0;
-    if (queued > 0) {
-      await sb.from("approvals").update({
-        status: "approved", reviewed_at: nowIso,
-      }).in("send_id", (claimed ?? []).map((c: any) => c.id));
+    for (let i = 0; i < queueIds.length; i += WRITE_CHUNK) {
+      const chunk = queueIds.slice(i, i + WRITE_CHUNK);
+      const { data: claimed, error } = await sb.from("sends").update({
+        status: "approved",
+        scheduled_at: nowIso,
+      }).in("id", chunk).eq("status", "pending_approval").select("id");
+      if (error) {
+        console.error(`[send] UPDATE chunk ${i} failed:`, error);
+        continue;  // keep going — partial success better than total failure
+      }
+      const claimedIds = (claimed ?? []).map((c: any) => c.id);
+      queued += claimedIds.length;
+      if (claimedIds.length > 0) {
+        await sb.from("approvals").update({
+          status: "approved", reviewed_at: nowIso,
+        }).in("send_id", claimedIds);
+      }
     }
   }
 
