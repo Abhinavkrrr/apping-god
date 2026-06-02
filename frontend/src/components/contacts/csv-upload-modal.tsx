@@ -146,6 +146,9 @@ export function CsvUploadModal() {
   const [skipped, setSkipped] = useState<{ reason: string; sample: string }[]>([]);
   const [batchLabel, setBatchLabel] = useState("");
   const [autoGenerate, setAutoGenerate] = useState(true);
+  // Default ON: re-imports should always end with all imported contacts
+  // having a fresh pending draft, not silently skip them due to dedup.
+  const [forceRegenerate, setForceRegenerate] = useState(true);
   const [isPending, startTransition] = useTransition();
 
   // Shared row-mapping pipeline. Takes header row + data rows, returns
@@ -313,7 +316,9 @@ export function CsvUploadModal() {
           // Auto-generate drafts for these contacts so they appear in Approve queue immediately
           if (autoGenerate && r.contact_ids && r.contact_ids.length > 0) {
             toast.info(`Generating drafts for ${r.contact_ids.length} contact(s)…`);
-            const g = await generateDraftsForContacts(r.contact_ids);
+            const g = await generateDraftsForContacts(r.contact_ids, undefined, {
+              forceRegenerate, switchCampaign: true,
+            });
             if (g.ok) {
               // Be MUCH louder about partial-success scenarios so user
               // understands why /approve count might not equal input.
@@ -405,6 +410,27 @@ export function CsvUploadModal() {
               <strong>Generate drafts for these contacts after import</strong>
               <span className="text-xs text-slate-500 block">
                 Imports go straight to the Approve queue — no need to click Generate Drafts.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 cursor-pointer text-sm pl-6">
+            <input
+              type="checkbox" checked={forceRegenerate}
+              onChange={(e) => setForceRegenerate(e.target.checked)}
+              disabled={!autoGenerate}
+              className="h-4 w-4 rounded border-slate-300 mt-0.5"
+            />
+            <span className={!autoGenerate ? "opacity-40" : ""}>
+              <strong className="text-emerald-700">Force re-create drafts</strong>{" "}
+              <span className="text-xs text-slate-500 block">
+                ON (default): delete any existing pending drafts for these contacts first,
+                then create fresh ones. Ensures every imported contact ends up with a
+                draft in the Approve queue — no silent skips when re-importing the same
+                emails.
+                <br />
+                OFF: per-campaign dedup applies. Contacts who already have pending drafts
+                are skipped (no new drafts created for them).
               </span>
             </span>
           </label>

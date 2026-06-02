@@ -131,7 +131,7 @@ export async function saveMasterTemplate(templateId: string, subject: string, bo
 export async function generateDraftsForContacts(
   contactIds: string[],
   campaignName?: string,
-  opts: { globalDedup?: boolean; switchCampaign?: boolean } = {}
+  opts: { globalDedup?: boolean; switchCampaign?: boolean; forceRegenerate?: boolean } = {}
 ) {
   const sb = createAdminClient();
   if (!contactIds || contactIds.length === 0) return { ok: false, error: "No contact IDs." };
@@ -145,6 +145,27 @@ export async function generateDraftsForContacts(
     .eq("campaign_id", campaign.id).eq("step_number", 0).single();
   if (!seq?.templates) return { ok: false, error: "Master template not found." };
   const template = (seq as any).templates;
+
+  // FORCE REGENERATE: when set (typically from "re-create fresh drafts"
+  // checkbox on the import modal), wipe ALL existing pending drafts for
+  // these contacts in the target campaign so the dedup-skip below doesn't
+  // silently drop them. Result: every contactId in the input gets exactly
+  // 1 fresh pending draft in the target campaign. This is what the user
+  // expects when they re-import a CSV and want all contacts in queue.
+  let force_deleted = 0;
+  if (opts.forceRegenerate) {
+    const { data: doomed } = await sb.from("sends")
+      .select("id")
+      .eq("campaign_id", campaign.id)
+      .eq("status", "pending_approval")
+      .in("contact_id", contactIds);
+    if (doomed && doomed.length > 0) {
+      const ids = doomed.map((d: any) => d.id);
+      await sb.from("approvals").delete().in("send_id", ids);
+      await sb.from("sends").delete().in("id", ids);
+      force_deleted = ids.length;
+    }
+  }
 
   // NEW DEFAULT (switchCampaign=true): treat each contact as having ONE
   // active campaign at a time. If a contact has pending drafts in OTHER
@@ -228,7 +249,11 @@ export async function generateDraftsForContacts(
 
   revalidatePath("/approve");
   revalidatePath("/");
-  return { ok: true, created, skipped: contactIds.length - created, cleaned_other_campaigns };
+  return {
+    ok: true, created,
+    skipped: contactIds.length - created,
+    cleaned_other_campaigns, force_deleted,
+  };
 }
 
 // ============================================================
@@ -404,6 +429,62 @@ export async function generateDrafts(opts: {
     ok: true, created, failed,
     total_eligible: pool.length,
     cleaned_other_campaigns,
+  };
+}
+
+// ============================================================
+// REGENERATE drafts for a batch — nuclear "fix my batch" button
+// ============================================================
+//
+// For every contact in the given import_batch_id, delete ALL their
+// pending drafts (any campaign) and create a fresh one in the target
+// campaign. Bypasses per-campaign dedup entirely. Used when:
+//   - User imported a CSV but the batch chip shows 0 drafts because
+//     auto-generate got skipped/blocked
+//   - User wants to "reset" a batch to a different campaign
+//   - Existing drafts have stale content and need refresh
+//
+// Returns counts so the UI toast can show the full impact.
+export async function regenerateDraftsForBatch(
+  batchId: string,
+  campaignName?: string
+): Promise<{
+  ok: boolean;
+  contacts?: number;
+  deleted?: number;
+  created?: number;
+  campaign?: string;
+  error?: string;
+}> {
+  const sb = createAdminClient();
+  const cName = campaignName ?? DEFAULT_CAMPAIGN_NAME;
+
+  // 1. Resolve campaign
+  const { data: campaign } = await sb.from("campaigns").select("id, name")
+    .eq("name", cName).single();
+  if (!campaign) return { ok: false, error: `Campaign "${cName}" not found.` };
+
+  // 2. Get all contact_ids in this batch
+  const { data: batchContacts } = await sb.from("contacts")
+    .select("id").eq("import_batch_id", batchId);
+  const contactIds = (batchContacts ?? []).map((c: any) => c.id);
+  if (contactIds.length === 0) {
+    return { ok: false, error: "No contacts in this batch." };
+  }
+
+  // 3. Generate with forceRegenerate so existing drafts get wiped + recreated
+  const r = await generateDraftsForContacts(contactIds, cName, {
+    forceRegenerate: true,
+    switchCampaign: true,
+  });
+  if (!r.ok) return { ok: false, error: r.error };
+
+  return {
+    ok: true,
+    contacts: contactIds.length,
+    deleted: r.force_deleted ?? 0,
+    created: r.created ?? 0,
+    campaign: campaign.name as string,
   };
 }
 

@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Trash2, Loader2, X } from "lucide-react";
+import { Trash2, Loader2, X, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { deleteBatch, previewBatchDelete } from "@/app/actions/contacts";
+import { regenerateDraftsForBatch } from "@/app/actions/send";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader,
   DialogTitle, DialogClose,
@@ -70,6 +71,37 @@ export function BatchChips({
   // require user to type it. We just disable the trash icon for those.
   const PROTECTED = ["Legacy (pre-batch)", "Quick Add"];
 
+  // ── Regenerate state ──────────────────────────────────────────
+  const [regenerating, setRegenerating] = useState<string | null>(null);
+  function handleRegenerate(b: BatchInfo) {
+    const campaign = prompt(
+      `Regenerate drafts for batch "${b.name}" (${b.contact_count} contacts)?\n\n` +
+      `This will DELETE all existing pending drafts for these contacts (in any campaign) and create fresh ones in the campaign you pick below.\n\n` +
+      `Type the campaign name exactly:\n` +
+      `  • Outreach\n` +
+      `  • SaaS Sales\n` +
+      `  • AI Builder Internship\n\n` +
+      `(Cancel = don't regenerate)`,
+      "Outreach"
+    );
+    if (!campaign?.trim()) return;
+    setRegenerating(b.id);
+    startTransition(async () => {
+      const r = await regenerateDraftsForBatch(b.id, campaign.trim());
+      setRegenerating(null);
+      if (r.ok) {
+        toast.success(
+          `✓ Regenerated for "${b.name}" → ${r.created} draft(s) in ${r.campaign}` +
+          (r.deleted ? ` · wiped ${r.deleted} old draft(s)` : ""),
+          { duration: 8000 }
+        );
+        router.refresh();
+      } else {
+        toast.error(r.error ?? "Regenerate failed.");
+      }
+    });
+  }
+
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -90,6 +122,17 @@ export function BatchChips({
                 {b.name} ({b.contact_count})
               </Badge>
             </Link>
+            <button
+              type="button"
+              onClick={() => handleRegenerate(b)}
+              disabled={regenerating !== null || b.contact_count === 0}
+              className="h-[22px] px-1.5 border border-l-0 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-900 transition-colors disabled:opacity-40"
+              title={`Regenerate drafts for batch "${b.name}" — deletes existing pending drafts for these ${b.contact_count} contacts (any campaign) and creates fresh ones`}
+            >
+              {regenerating === b.id
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Sparkles className="h-3 w-3" />}
+            </button>
             <button
               type="button"
               onClick={() => openConfirm(b)}

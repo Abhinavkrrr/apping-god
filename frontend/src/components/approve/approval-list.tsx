@@ -279,6 +279,17 @@ export function ApprovalList({
             </span>
           </label>
 
+          {selected.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="rounded border border-slate-300 bg-white hover:bg-red-50 hover:border-red-300 hover:text-red-700 px-2 py-1 font-medium text-slate-700"
+              title="Clear all row selections (does not affect batch chip filters above)"
+            >
+              Uncheck all
+            </button>
+          )}
+
           <span className="text-slate-300 mx-1">|</span>
           <span className="text-slate-500 font-medium">Quick select:</span>
           {PRESETS.map(n => (
