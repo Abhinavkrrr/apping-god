@@ -200,46 +200,93 @@ export async function bulkImportContacts(
   }
 
   // ── Phase 2: bulk-resolve company_id for every unique company ─
+  // Chunked so the .or() clause never overflows PostgREST's ~8KB URL limit.
+  // For the failed 481-company import case, the old single-shot .or() chain
+  // was ~11.5KB and silently truncated/failed — leaving the import looking
+  // like it succeeded but the contacts never linked to companies.
   const uniqueCompanyNames = [...new Set(
     toProcess.map(r => r.company_name?.trim()).filter(Boolean) as string[]
   )];
   const companyMap = new Map<string, string>();   // lowercased name → company.id
 
   if (uniqueCompanyNames.length > 0) {
-    // Case-insensitive lookup via .or() with ilike per name. For 50-200
-    // unique companies this fits comfortably in the URL length limit.
-    // For larger imports the OR-chain would need chunking.
-    const orClause = uniqueCompanyNames
-      .map(n => `name.ilike.${n.replace(/[,()]/g, "")}`)
-      .join(",");
-    const { data: existingCos } = await sb.from("companies")
-      .select("id, name").or(orClause);
-    for (const co of (existingCos ?? []) as any[]) {
-      companyMap.set(co.name.toLowerCase().trim(), co.id);
+    const OR_CHUNK = 50;   // ~50 names × 30 chars each ≈ 1.5KB — safe
+    try {
+      for (let i = 0; i < uniqueCompanyNames.length; i += OR_CHUNK) {
+        const chunk = uniqueCompanyNames.slice(i, i + OR_CHUNK);
+        const orClause = chunk
+          .map(n => `name.ilike.${n.replace(/[,()]/g, "")}`)
+          .join(",");
+        const { data: existingCos, error: lookupErr } = await sb.from("companies")
+          .select("id, name").or(orClause);
+        if (lookupErr) {
+          console.error(`[import] company lookup chunk ${i}-${i+OR_CHUNK} failed:`, lookupErr);
+          sampleErrors.push(`Company lookup chunk failed: ${lookupErr.message}`);
+          // Don't bail — proceed without that chunk's matches (companies just get
+          // re-inserted as new in the missing-fill phase)
+          continue;
+        }
+        for (const co of (existingCos ?? []) as any[]) {
+          companyMap.set(co.name.toLowerCase().trim(), co.id);
+        }
+      }
+    } catch (e) {
+      console.error("[import] Phase 2 (company lookup) threw:", e);
+      sampleErrors.push(`Phase 2 threw: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Insert companies that didn't exist (one batch INSERT)
+    // Insert companies that didn't exist. Chunk these too — Supabase JS
+    // accepts an array but very large arrays can hit body-size limits.
     const missing = uniqueCompanyNames.filter(n => !companyMap.has(n.toLowerCase().trim()));
     if (missing.length > 0) {
-      const inserts = missing.map(name => {
-        const r = toProcess.find(x => x.company_name?.trim() === name && x.company_brief);
-        return { name, brief_one_line: r?.company_brief ?? null };
-      });
-      const { data: created } = await sb.from("companies")
-        .insert(inserts).select("id, name");
-      for (const co of (created ?? []) as any[]) {
-        companyMap.set(co.name.toLowerCase().trim(), co.id);
+      const INSERT_CHUNK = 200;
+      try {
+        for (let i = 0; i < missing.length; i += INSERT_CHUNK) {
+          const chunk = missing.slice(i, i + INSERT_CHUNK);
+          const inserts = chunk.map(name => {
+            const r = toProcess.find(x => x.company_name?.trim() === name && x.company_brief);
+            return { name, brief_one_line: r?.company_brief ?? null };
+          });
+          const { data: created, error: insErr } = await sb.from("companies")
+            .insert(inserts).select("id, name");
+          if (insErr) {
+            console.error(`[import] company insert chunk ${i}-${i+INSERT_CHUNK} failed:`, insErr);
+            sampleErrors.push(`Company insert chunk failed: ${insErr.message}`);
+            continue;
+          }
+          for (const co of (created ?? []) as any[]) {
+            companyMap.set(co.name.toLowerCase().trim(), co.id);
+          }
+        }
+      } catch (e) {
+        console.error("[import] Phase 2 (company insert) threw:", e);
+        sampleErrors.push(`Phase 2 insert threw: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
 
   // ── Phase 3: bulk-check which contacts already exist ──────────
+  // Chunk .in() filter too — 1000+ emails in one filter can exceed URL limit.
   const processEmails = toProcess.map(r => r.email);
-  const { data: existingContacts } = await sb.from("contacts")
-    .select("id, email, custom_fields").in("email", processEmails);
   const existingMap = new Map<string, { id: string; custom_fields: any }>();
-  for (const c of (existingContacts ?? []) as any[]) {
-    existingMap.set(c.email, { id: c.id, custom_fields: c.custom_fields });
+  const IN_CHUNK = 250;
+  try {
+    for (let i = 0; i < processEmails.length; i += IN_CHUNK) {
+      const chunk = processEmails.slice(i, i + IN_CHUNK);
+      const { data: existingContacts, error: chkErr } = await sb.from("contacts")
+        .select("id, email, custom_fields").in("email", chunk);
+      if (chkErr) {
+        console.error(`[import] existing-contact check chunk ${i}-${i+IN_CHUNK} failed:`, chkErr);
+        sampleErrors.push(`Existing-contact check failed: ${chkErr.message}`);
+        continue;
+      }
+      for (const c of (existingContacts ?? []) as any[]) {
+        existingMap.set(c.email, { id: c.id, custom_fields: c.custom_fields });
+      }
+    }
+  } catch (e) {
+    console.error("[import] Phase 3 (existing check) threw:", e);
+    sampleErrors.push(`Phase 3 threw: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // ── Phase 4: partition into new (bulk INSERT) vs existing (UPDATE) ──
@@ -294,19 +341,34 @@ export async function bulkImportContacts(
   }
 
   // ── Phase 5: bulk INSERT new contacts ─────────────────────────
+  // Chunked — Supabase JS will accept thousands of rows in one .insert([])
+  // call but the underlying HTTP body has a ~1MB limit. ~300 contact rows
+  // ≈ ~150KB so we're safe at 250 per chunk with headroom.
   const contactIds: string[] = [];
   let imported = 0, updated = 0;
   let failed = failedMissing + blockedCount;
 
   if (toInsert.length > 0) {
-    const { data: insertedRows, error: insErr } = await sb.from("contacts")
-      .insert(toInsert).select("id");
-    if (insErr) {
-      failed += toInsert.length;
-      if (sampleErrors.length < 5) sampleErrors.push(`bulk insert: ${insErr.message}`);
-    } else {
-      imported = insertedRows?.length ?? 0;
-      for (const c of (insertedRows ?? []) as any[]) contactIds.push(c.id);
+    const INSERT_CHUNK = 250;
+    try {
+      for (let i = 0; i < toInsert.length; i += INSERT_CHUNK) {
+        const chunk = toInsert.slice(i, i + INSERT_CHUNK);
+        const { data: insertedRows, error: insErr } = await sb.from("contacts")
+          .insert(chunk).select("id");
+        if (insErr) {
+          console.error(`[import] Phase 5 INSERT chunk ${i}-${i+INSERT_CHUNK} failed:`, insErr);
+          failed += chunk.length;
+          if (sampleErrors.length < 5) sampleErrors.push(`Insert chunk failed: ${insErr.message}`);
+          continue;
+        }
+        const n = insertedRows?.length ?? 0;
+        imported += n;
+        for (const c of (insertedRows ?? []) as any[]) contactIds.push(c.id);
+      }
+    } catch (e) {
+      console.error("[import] Phase 5 threw:", e);
+      sampleErrors.push(`Phase 5 threw: ${e instanceof Error ? e.message : String(e)}`);
+      failed += toInsert.length - imported;  // count whatever didn't make it
     }
   }
 
