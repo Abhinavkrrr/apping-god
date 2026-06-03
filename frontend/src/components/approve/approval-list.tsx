@@ -16,6 +16,8 @@ interface Draft {
   company_name: string;
   campaign_name: string;
   import_batch_id: string | null;
+  sequence_step?: number | null;
+  has_resume?: boolean;
 }
 
 export interface BatchInfo {

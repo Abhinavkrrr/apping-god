@@ -13,6 +13,8 @@ export const revalidate = 0;
 interface DraftRow {
   id: string;
   rendered_subject: string | null;
+  sequence_step: number | null;
+  resume_id: string | null;
   campaigns: { name: string } | null;
   contacts: {
     email: string; first_name: string; last_name: string | null;
@@ -26,7 +28,7 @@ async function loadData() {
 
   const [{ data, count }, campaigns, totalContactsRes, sendsByStatus, batches] = await Promise.all([
     sb.from("sends").select(`
-      id, rendered_subject,
+      id, rendered_subject, sequence_step, resume_id,
       campaigns(name),
       contacts(email, first_name, last_name, import_batch_id, companies(name))
     `, { count: "exact" })
@@ -49,6 +51,8 @@ async function loadData() {
     company_name: d.contacts?.companies?.name ?? "—",
     campaign_name: d.campaigns?.name ?? "—",
     import_batch_id: d.contacts?.import_batch_id ?? null,
+    sequence_step: d.sequence_step,
+    has_resume: !!d.resume_id,
   }));
 
   const totalContacts = totalContactsRes.count ?? 0;

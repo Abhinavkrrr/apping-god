@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { X, Eye, Send, Sparkles, Loader2 } from "lucide-react";
+import { X, Eye, Send, Sparkles, Loader2, Paperclip } from "lucide-react";
 import { toast } from "sonner";
 import { rejectSend, dispatchNow } from "@/app/actions/approvals";
 import { personalizeSingleSend } from "@/app/actions/personalize";
@@ -18,6 +18,8 @@ interface Draft {
   contact_name: string;
   company_name: string;
   campaign_name: string;
+  sequence_step?: number | null;   // 0 = first touch, 1/2/3 = follow-ups
+  has_resume?: boolean;            // resume_id set on this send
 }
 
 export function ApprovalRow({ draft, checked, onCheck }: {
@@ -91,11 +93,37 @@ export function ApprovalRow({ draft, checked, onCheck }: {
           className="h-4 w-4 rounded border-slate-300"
         />
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-sm">
-            {draft.contact_name}{" "}
+          <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+            <span>{draft.contact_name}</span>
             <span className="text-slate-400 font-normal">&lt;{draft.contact_email}&gt;</span>
+            {/* sequence_step badge: 0=first touch (green), >0=follow-up (amber) */}
+            {typeof draft.sequence_step === "number" && (
+              draft.sequence_step === 0 ? (
+                <span className="inline-flex items-center rounded bg-emerald-50 border border-emerald-200 text-emerald-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+                  First touch
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded bg-amber-50 border border-amber-200 text-amber-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                  title={`This is a Day ${draft.sequence_step * 2} follow-up. The first touch was sent previously — follow-ups never re-attach the CV by design.`}
+                >
+                  Follow-up #{draft.sequence_step}
+                </span>
+              )
+            )}
+            {/* resume attached indicator */}
+            {draft.has_resume ? (
+              <span title="CV is attached to this draft"
+                className="inline-flex items-center rounded bg-blue-50 border border-blue-200 text-blue-700 px-1 py-0.5 text-[10px] font-medium">
+                <Paperclip className="h-2.5 w-2.5 mr-0.5" /> CV
+              </span>
+            ) : (
+              <span title="No CV attached (follow-ups never re-attach CV; or campaign has no resume set)"
+                className="inline-flex items-center rounded bg-slate-100 border border-slate-200 text-slate-500 px-1 py-0.5 text-[10px] font-medium">
+                No CV
+              </span>
+            )}
           </div>
-          <div className="text-xs text-slate-500">{draft.company_name}</div>
+          <div className="text-xs text-slate-500">{draft.company_name} · {draft.campaign_name}</div>
         </div>
         <Button variant="ghost" size="sm" onClick={togglePreview}>
           <Eye className="h-3.5 w-3.5 mr-1" /> {expanded ? "Hide" : "Preview"}
