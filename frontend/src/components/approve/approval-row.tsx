@@ -104,7 +104,7 @@ export function ApprovalRow({ draft, checked, onCheck }: {
                 </span>
               ) : (
                 <span className="inline-flex items-center rounded bg-amber-50 border border-amber-200 text-amber-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                  title={`This is a Day ${draft.sequence_step * 2} follow-up. The first touch was sent previously — follow-ups never re-attach the CV by design.`}
+                  title={`This is a Day ${draft.sequence_step * 2} follow-up. The first touch was sent previously. CV is re-attached on every email in the sequence (per your setting).`}
                 >
                   Follow-up #{draft.sequence_step}
                 </span>

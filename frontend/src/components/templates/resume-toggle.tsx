@@ -80,7 +80,7 @@ export function ResumeToggle({
       </select>
 
       <span className="text-[10px] text-slate-400 ml-1 hidden sm:inline">
-        (first-touch only — follow-ups never attach CV)
+        (applies to first-touch AND all follow-ups)
       </span>
     </div>
   );

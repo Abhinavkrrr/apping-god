@@ -68,9 +68,9 @@ export async function listResumeOptions(): Promise<ResumeOption[]> {
  * Returns counts so the UI toast can say e.g.
  *   "Attached 'Abhinav Kumar IITB' to AI Builder Internship + 538 pending drafts"
  *
- * Note: follow-up sends always have resume_id=NULL by design (followup-daemon
- * explicitly sets it that way — you don't re-attach the CV on every nudge),
- * so this only affects first-touch drafts in practice.
+ * Note: followup-daemon now copies the campaign's resume_id onto each new
+ * follow-up send (changed from null per user request). So setting this
+ * affects ALL future drafts in the sequence — first touch + follow-ups.
  */
 export async function setCampaignResume(
   campaignId: string,

@@ -105,6 +105,13 @@ Deno.serve(async () => {
     if (!seq) { skipped++; continue; }
     const t = (seq as any).templates;
 
+    // Look up the campaign's resume_id so this follow-up carries the CV too.
+    // Previously hardcoded null (industry default = don't re-attach), but
+    // per user request every email in the sequence now attaches the resume.
+    const { data: camp } = await sb.from("campaigns")
+      .select("resume_id").eq("id", send.campaign_id).maybeSingle();
+    const resumeId = (camp as any)?.resume_id ?? null;
+
     const company = c.companies || { name: "your company", brief_one_line: "" };
     const ctx = {
       first_name: c.first_name ?? "",
@@ -124,7 +131,7 @@ Deno.serve(async () => {
       campaign_id: send.campaign_id,
       sequence_step: nextStep,
       template_id: t.id,
-      resume_id: null, // follow-ups don't re-attach
+      resume_id: resumeId, // follow-ups now re-attach the campaign's resume (was null)
       rendered_subject: subject,
       rendered_body: html,
       status: "approved",
