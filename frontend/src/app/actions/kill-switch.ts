@@ -57,21 +57,28 @@ export async function getKillSwitchStatus(): Promise<KillSwitchStatus> {
   };
 }
 
-/** Stop everything immediately. Three locks:
+/** Stop everything immediately. FOUR locks:
  *   1. Set paused_until = 2099 on every account (send-worker refuses to use any)
  *   2. Flip every status='approved' send back to status='pending_approval'
  *      and null out scheduled_at (cron dispatcher finds nothing to send)
- *   3. Mirror in approvals table
+ *   3. NULL OUT next_followup_at on every sent row — without this, the
+ *      followup-daemon (runs every 15 min on pg_cron) would keep finding
+ *      due follow-ups and generating fresh status='approved' sends,
+ *      completely bypassing locks #1 and #2. The daemon itself also
+ *      kill-switch checks now, but belt-AND-suspenders.
+ *   4. Mirror in approvals table
+ *
  * Does NOT delete data. Releasing the kill switch is non-destructive.
  *
- * NOTE: this does NOT touch contacts.next_followup_at on sent rows, so
- * when you release the switch, the daemon will pick up follow-ups again
- * normally for whichever messages went out before the kill.
+ * NOTE: nulling next_followup_at means follow-ups WILL NOT auto-resume
+ * after release. You'll need to manually re-schedule them — which is
+ * the safer default after a panic stop.
  */
 export async function engageKillSwitch(): Promise<{
   ok: boolean;
   accounts_paused: number;
   scheduled_cancelled: number;
+  followups_disarmed: number;
   error?: string;
 }> {
   const sb = createAdminClient();
@@ -81,7 +88,7 @@ export async function engageKillSwitch(): Promise<{
     .update({ paused_until: KILLED_UNTIL_ISO })
     .gte("id", "00000000-0000-0000-0000-000000000000")   // touches every row
     .select("id");
-  if (pErr) return { ok: false, accounts_paused: 0, scheduled_cancelled: 0, error: pErr.message };
+  if (pErr) return { ok: false, accounts_paused: 0, scheduled_cancelled: 0, followups_disarmed: 0, error: pErr.message };
 
   // 2. Convert all 'approved' (scheduled) sends back to pending_approval
   //    so the GH-Actions dispatcher has nothing to fire.
@@ -90,11 +97,25 @@ export async function engageKillSwitch(): Promise<{
     .eq("status", "approved")
     .select("id");
   if (cErr) {
-    return { ok: false, accounts_paused: pausedAcc?.length ?? 0, scheduled_cancelled: 0, error: cErr.message };
+    return { ok: false, accounts_paused: pausedAcc?.length ?? 0, scheduled_cancelled: 0, followups_disarmed: 0, error: cErr.message };
   }
   const cancelledIds = (cancelled ?? []).map((s: any) => s.id);
 
-  // 3. Mirror in approvals table — chunk in 100s to dodge the URL cap
+  // 3. DISARM the follow-up daemon by nulling next_followup_at on every
+  //    sent row. The daemon's WHERE clause is `next_followup_at <= now()`,
+  //    so null means "skip me forever". This is the lock that was missing
+  //    before — without it, the daemon kept generating new approved sends
+  //    every 15 min and your mails kept going out.
+  const { data: disarmed, error: dErr } = await sb.from("sends")
+    .update({ next_followup_at: null })
+    .not("next_followup_at", "is", null)
+    .select("id");
+  if (dErr) {
+    return { ok: false, accounts_paused: pausedAcc?.length ?? 0, scheduled_cancelled: cancelledIds.length, followups_disarmed: 0, error: dErr.message };
+  }
+  const disarmedCount = (disarmed ?? []).length;
+
+  // 4. Mirror in approvals table — chunk in 100s to dodge the URL cap
   if (cancelledIds.length > 0) {
     const CHUNK = 100;
     for (let i = 0; i < cancelledIds.length; i += CHUNK) {
@@ -110,6 +131,7 @@ export async function engageKillSwitch(): Promise<{
     ok: true,
     accounts_paused: pausedAcc?.length ?? 0,
     scheduled_cancelled: cancelledIds.length,
+    followups_disarmed: disarmedCount,
   };
 }
 

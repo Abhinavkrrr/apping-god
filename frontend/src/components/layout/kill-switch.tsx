@@ -31,10 +31,12 @@ export function KillSwitchPanel() {
       "ENGAGE KILL SWITCH?\n\n" +
       "This will:\n" +
       "  1. Pause every Gmail account (send-worker refuses to use any)\n" +
-      "  2. Cancel every scheduled send (status flipped to pending_approval)\n" +
-      "  3. No new emails go out — anywhere, any campaign — until released\n\n" +
-      "Releasing the switch later does NOT auto-restart sends. You'll need\n" +
-      "to manually re-approve drafts.\n\n" +
+      "  2. Cancel every scheduled send (flipped to pending_approval)\n" +
+      "  3. DISARM every follow-up (next_followup_at → NULL) so the\n" +
+      "     follow-up daemon stops generating new sends every 15 min\n" +
+      "  4. No new emails go out — anywhere, any campaign — until released\n\n" +
+      "Releasing the switch later does NOT auto-restart sends OR follow-ups.\n" +
+      "You'll need to manually re-approve drafts AND re-schedule follow-ups.\n\n" +
       "Engage now?"
     )) return;
 
@@ -44,7 +46,7 @@ export function KillSwitchPanel() {
       setBusy(false);
       if (r.ok) {
         toast.error(
-          `🛑 KILL SWITCH ENGAGED — ${r.accounts_paused} account(s) paused, ${r.scheduled_cancelled} scheduled send(s) cancelled.`,
+          `🛑 KILL SWITCH ENGAGED — ${r.accounts_paused} account(s) paused, ${r.scheduled_cancelled} scheduled send(s) cancelled, ${r.followups_disarmed} follow-up(s) disarmed.`,
           { duration: 15000 }
         );
         await refresh();

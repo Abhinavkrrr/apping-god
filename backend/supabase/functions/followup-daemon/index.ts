@@ -56,6 +56,37 @@ Deno.serve(async () => {
   const sb = admin();
   const now = new Date();
 
+  // ─────────────────────────────────────────────────────────────────────
+  // KILL-SWITCH HARD CHECK — runs BEFORE any work. If every account row
+  // has paused_until in the far future (the kill switch sets 2099), the
+  // daemon must NOT generate any new follow-ups. Otherwise the daemon
+  // would keep manufacturing fresh status='approved' sends every 15 min,
+  // and the dispatcher would fire them — completely bypassing the kill
+  // switch the user engaged from the dashboard.
+  //
+  // We compare against "tomorrow" rather than "now" so a routine short
+  // pause (a few hours of throttling) doesn't accidentally trip this.
+  // The kill switch always sets 2099, which is far past tomorrow.
+  // ─────────────────────────────────────────────────────────────────────
+  const tomorrowIso = new Date(now.getTime() + 86400_000).toISOString();
+  const { data: accountsState } = await sb.from("accounts").select("paused_until");
+  const allAccounts = accountsState ?? [];
+  const allPaused = allAccounts.length > 0 && allAccounts.every(
+    (a: any) => a.paused_until && a.paused_until > tomorrowIso
+  );
+  if (allPaused) {
+    console.log(`[followup-daemon] 🛑 KILL SWITCH ENGAGED — ${allAccounts.length}/${allAccounts.length} accounts paused. Refusing to generate follow-ups.`);
+    return new Response(JSON.stringify({
+      ok: false,
+      kill_switch: true,
+      due_count: 0,
+      created: 0,
+      skipped: 0,
+      reason: "kill_switch_engaged",
+      timestamp: now.toISOString(),
+    }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+
   // Find due follow-ups
   const { data: due } = await sb.from("sends").select(`
     id, contact_id, campaign_id, sequence_step, thread_id, message_id,
