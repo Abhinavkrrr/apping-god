@@ -183,9 +183,13 @@ Deno.serve(async (req) => {
     attachment = await fetchResume(resumeId);
   }
 
-  // Pick a sending account: prefer one from the accounts table that isn't
-  // paused, isn't dead, is under daily cap, and has a REAL password (not
-  // a placeholder like "ENV"). Fall back to env GMAIL_USER otherwise.
+  // Pick a sending account from the accounts table.
+  // ALWAYS prefer DB rows over env vars when ANY row exists, so kill-switch
+  // (which pauses every row with paused_until = far_future) genuinely
+  // blocks sending. Previous version had a silent fallback to GMAIL_USER /
+  // GMAIL_APP_PASSWORD env vars when `eligible` came back undefined, which
+  // meant the kill switch had no effect — every send still fired via env
+  // credentials. That's the bug being fixed here.
   const sb = admin();
   const { data: pool } = await sb.from("accounts").select("*")
     .in("warmup_phase", ["warmup", "active"])
@@ -194,11 +198,52 @@ Deno.serve(async (req) => {
   const isRealPassword = (p: string | null | undefined) =>
     !!p && p !== "ENV" && p.length >= 8;
 
+  // KILL-SWITCH HARD CHECK: if every account in the table has paused_until
+  // in the future (the kill-switch sentinel is 2099-12-31), refuse outright
+  // BEFORE looking at env fallback. This is the explicit guard.
+  if (pool && pool.length > 0) {
+    const now = Date.now();
+    const allPaused = pool.every((a: any) =>
+      a.paused_until && new Date(a.paused_until).getTime() > now
+    );
+    if (allPaused) {
+      const until = (pool[0] as any).paused_until;
+      if (logSendId) {
+        await sb.from("sends").update({
+          status: "skipped",
+          failure_reason: `Kill switch engaged (all accounts paused until ${until})`,
+        }).eq("id", logSendId);
+      }
+      return jsonResponse({
+        ok: false,
+        error: `KILL SWITCH ENGAGED — all ${pool.length} account(s) paused until ${until}. Refusing to send.`,
+      }, 503);
+    }
+  }
+
   const eligible = (pool ?? []).find((a: any) =>
     isRealPassword(a.smtp_password_enc) &&
     a.sent_today < a.daily_cap &&
     (!a.paused_until || new Date(a.paused_until) <= new Date())
   );
+
+  // Env fallback is ONLY safe when there are no accounts in the table
+  // at all (fresh install or local dev). If accounts EXIST but none are
+  // eligible, REFUSE rather than silently sending via env vars — this
+  // is what made the kill switch leaky before.
+  if (!eligible && pool && pool.length > 0) {
+    if (logSendId) {
+      await sb.from("sends").update({
+        status: "skipped",
+        failure_reason: "No eligible account (all paused, capped, or have placeholder passwords)",
+      }).eq("id", logSendId);
+    }
+    return jsonResponse({
+      ok: false,
+      error: `No eligible account: ${pool.length} accounts exist but none are usable (paused / over daily cap / placeholder password). Env-var fallback explicitly disabled when accounts table is populated.`,
+    }, 503);
+  }
+
   const senderEmail = eligible?.email ?? GMAIL_USER;
   const senderPassword = eligible?.smtp_password_enc ?? GMAIL_APP_PASSWORD;
   const senderAccountId = eligible?.id ?? null;
