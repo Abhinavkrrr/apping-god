@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
+import { KillSwitchPanel } from "./kill-switch";
 
 const nav = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -70,9 +71,13 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-slate-200 px-6 py-3 text-xs text-slate-500">
-        <div className="font-medium text-slate-700">Abhinav Kumar</div>
-        <div>IIT Bombay • 2027</div>
+      <div className="border-t border-slate-200 pt-2">
+        {/* Kill switch — always visible from any page so panic-stop is 1 click */}
+        <KillSwitchPanel />
+        <div className="px-6 py-2 text-xs text-slate-500">
+          <div className="font-medium text-slate-700">Abhinav Kumar</div>
+          <div>IIT Bombay • 2027</div>
+        </div>
       </div>
     </aside>
   );

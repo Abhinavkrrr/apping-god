@@ -30,6 +30,21 @@ const FOLLOWUP_DELAY_DAYS = 2;
   const sb = getSupabase();
   console.log(`Dispatcher — drain up to ${limit} approved sends. ${dry ? "(dry run)" : ""}`);
 
+  // KILL SWITCH CHECK — if every account has paused_until > tomorrow,
+  // the user has engaged the kill switch from the dashboard. Bail early
+  // without touching any sends. Defense in depth: send-worker also
+  // refuses paused accounts, so this is belt-AND-suspenders.
+  const tomorrowIso = new Date(Date.now() + 86400_000).toISOString();
+  const { data: accountsState } = await sb.from("accounts").select("paused_until");
+  const allAccounts = accountsState ?? [];
+  const allPaused = allAccounts.length > 0 && allAccounts.every(
+    (a) => a.paused_until && a.paused_until > tomorrowIso
+  );
+  if (allPaused) {
+    console.log(`🛑 KILL SWITCH ENGAGED — all ${allAccounts.length} accounts paused until far future. Exiting without dispatching.`);
+    return;
+  }
+
   const { data: due } = await sb.from("sends").select(`
     id, contact_id, resume_id, rendered_subject, rendered_body, sequence_step,
     contacts(email, unsubscribed_at, email_status, skip_reason)
